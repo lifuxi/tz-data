@@ -1,0 +1,222 @@
+"""
+MO Contract Master Sync.
+
+Creates and populates mo_contract_master table in tzdata_trading.db
+with MO (中证1000期权) contract metadata from Tushare opt_basic.
+"""
+import logging
+import sqlite3
+from datetime import datetime
+
+import pandas as pd
+
+from tzdata_pkg.config import TZDATA_TRADING_DB
+
+logger = logging.getLogger(__name__)
+
+TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS mo_contract_master (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_code TEXT NOT NULL,
+    contract_code TEXT NOT NULL,
+    underlying TEXT NOT NULL DEFAULT 'MO',
+    expiry_date TEXT,
+    strike_price REAL,
+    option_type TEXT,
+    list_date TEXT,
+    delist_date TEXT,
+    last_trade_date TEXT,
+    exercise_date TEXT,
+    multiplier REAL DEFAULT 100.0,
+    tick_size REAL DEFAULT 0.2,
+    status TEXT DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ts_code)
+);
+CREATE INDEX IF NOT EXISTS idx_mo_contract_underlying ON mo_contract_master(underlying);
+CREATE INDEX IF NOT EXISTS idx_mo_contract_expiry ON mo_contract_master(expiry_date);
+CREATE INDEX IF NOT EXISTS idx_mo_contract_status ON mo_contract_master(status);
+CREATE INDEX IF NOT EXISTS idx_mo_contract_type ON mo_contract_master(option_type);
+"""
+
+
+def _ensure_table(conn):
+    """Create mo_contract_master table if not exists."""
+    conn.executescript(TABLE_SQL)
+
+
+def _parse_contract_code(ts_code: str) -> str:
+    """
+    Parse Tushare format to short contract code.
+    e.g. 'MO2505C8500.CFFEX' -> 'MO2505-C-8500'
+    """
+    import re
+    base = ts_code.split(".")[0] if "." in ts_code else ts_code
+    match = re.match(r"^([A-Z]+)(\d{4,6})([CP])(\d+)$", base)
+    if match:
+        return f"{match.group(1)}{match.group(2)}-{match.group(3)}-{match.group(4)}"
+    return base
+
+
+def _parse_option_type(call_put: str) -> str:
+    """Map call_put to option_type."""
+    if call_put and str(call_put).upper() == 'C':
+        return 'call'
+    return 'put'
+
+
+def _normalize_date(date_str) -> str:
+    """Convert YYYYMMDD to YYYY-MM-DD."""
+    if date_str is None or pd.isna(date_str):
+        return None
+    s = str(date_str).strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    if len(s) == 10:
+        return s
+    return None
+
+
+def sync_mo_contracts(force: bool = False) -> dict:
+    """
+    Sync MO contract metadata from Tushare opt_basic.
+
+    Args:
+        force: If True, re-sync all contracts (including existing ones).
+
+    Returns:
+        dict with inserted/updated/total counts.
+    """
+    from tzdata_pkg.config import get_tushare_config
+    from tzdata_pkg.download.tushare.client import TushareClient
+
+    tushare_cfg = get_tushare_config()
+    client = TushareClient(token=tushare_cfg["token"])
+
+    logger.info("Fetching MO contracts from Tushare opt_basic...")
+    df = client.opt_basic(exchange="CFFEX")
+    if df is None or df.empty:
+        logger.warning("Tushare opt_basic returned no data")
+        return {"inserted": 0, "updated": 0, "total": 0}
+
+    # Filter MO contracts
+    ts_codes = df.get("ts_code", "")
+    if isinstance(ts_codes, pd.Series):
+        mo_mask = ts_codes.str.startswith("MO", na=False)
+        df = df[mo_mask]
+
+    logger.info(f"Found {len(df)} MO contracts from Tushare")
+
+    conn = sqlite3.connect(str(TZDATA_TRADING_DB))
+    try:
+        _ensure_table(conn)
+
+        inserted = 0
+        updated = 0
+
+        for _, row in df.iterrows():
+            ts_code = str(row.get("ts_code", "")).strip()
+            if not ts_code:
+                continue
+
+            contract_code = _parse_contract_code(ts_code)
+            call_put = row.get("call_put", "")
+            option_type = _parse_option_type(call_put)
+            strike = row.get("strike_price")
+            if strike is not None and pd.isna(strike):
+                strike = None
+            else:
+                strike = float(strike) if strike is not None else None
+
+            expiry_date = _normalize_date(row.get("delist_date") or row.get("exercise_date"))
+            list_date = _normalize_date(row.get("list_date"))
+            delist_date = _normalize_date(row.get("delist_date"))
+            last_trade_date = _normalize_date(row.get("last_trade_date"))
+            exercise_date = _normalize_date(row.get("exercise_date"))
+
+            existing = conn.execute(
+                "SELECT id, status FROM mo_contract_master WHERE ts_code = ?",
+                (ts_code,)
+            ).fetchone()
+
+            if existing and not force:
+                # Update delist_date and status if contract was delisted
+                if delist_date and existing[1] == "active":
+                    conn.execute("""
+                        UPDATE mo_contract_master
+                        SET delist_date = ?, exercise_date = ?,
+                            status = 'delisted', updated_at = CURRENT_TIMESTAMP
+                        WHERE ts_code = ?
+                    """, (delist_date, exercise_date, ts_code))
+                    updated += 1
+                continue
+
+            if existing and force:
+                conn.execute("""
+                    UPDATE mo_contract_master
+                    SET contract_code = ?, expiry_date = ?, strike_price = ?,
+                        option_type = ?, list_date = ?, delist_date = ?,
+                        last_trade_date = ?, exercise_date = ?, status = 'active',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE ts_code = ?
+                """, (contract_code, expiry_date, strike, option_type,
+                      list_date, delist_date, last_trade_date, exercise_date, ts_code))
+                updated += 1
+            else:
+                conn.execute("""
+                    INSERT OR IGNORE INTO mo_contract_master
+                        (ts_code, contract_code, underlying, expiry_date, strike_price,
+                         option_type, list_date, delist_date, last_trade_date,
+                         exercise_date, status)
+                    VALUES (?, ?, 'MO', ?, ?, ?, ?, ?, ?, ?, 'active')
+                """, (ts_code, contract_code, expiry_date, strike, option_type,
+                      list_date, delist_date, last_trade_date, exercise_date))
+                if conn.total_changes > 0:
+                    inserted += 1
+
+        conn.commit()
+        logger.info(f"Synced MO contracts: {inserted} inserted, {updated} updated, {len(df)} total")
+        return {"inserted": inserted, "updated": updated, "total": len(df)}
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to sync MO contracts: {e}", exc_info=True)
+        raise
+    finally:
+        conn.close()
+
+
+def get_mo_contracts(active_only: bool = True) -> list[dict]:
+    """Get MO contracts from master table."""
+    conn = sqlite3.connect(str(TZDATA_TRADING_DB))
+    try:
+        _ensure_table(conn)
+        where = "WHERE status = 'active'" if active_only else ""
+        rows = conn.execute(f"""
+            SELECT ts_code, contract_code, underlying, expiry_date, strike_price,
+                   option_type, list_date, delist_date, status
+            FROM mo_contract_master {where}
+            ORDER BY expiry_date, strike_price, option_type
+        """).fetchall()
+        return [
+            {
+                "ts_code": r[0],
+                "contract_code": r[1],
+                "underlying": r[2],
+                "expiry_date": r[3],
+                "strike_price": r[4],
+                "option_type": r[5],
+                "list_date": r[6],
+                "delist_date": r[7],
+                "status": r[8],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    result = sync_mo_contracts()
+    print(f"Result: {result}")

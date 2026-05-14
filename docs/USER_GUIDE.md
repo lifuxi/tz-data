@@ -1,6 +1,6 @@
 # tz-data 用户手册
 
-> 版本：0.6.0 | 数据维护与同步系统 | 最后更新：2026-05-14
+> 版本：0.7.0 | 数据维护与同步系统 | 最后更新：2026-05-14
 
 ## 目录
 
@@ -11,8 +11,9 @@
 5. [账单管理](#5-账单管理)
 6. [数据维护与同步](#6-数据维护与同步)
 7. [监控告警系统](#7-监控告警系统)
-8. [前端页面使用](#8-前端页面使用)
-9. [常见问题](#9-常见问题)
+8. [MO 数据同步](#610-mo-期权数据同步)
+9. [前端页面使用](#8-前端页面使用)
+10. [常见问题](#9-常见问题)
 
 ---
 
@@ -273,6 +274,67 @@ for exchange, stats in snapshot['by_exchange'].items():
 ```bash
 celery -A tzdata_pkg.scheduler.celery_app beat --loglevel=info
 ```
+
+### 6.10 MO 期权数据同步
+
+MO（中证 1000 股指期权）数据同步系统包含以下任务：
+
+| 任务 | 时间 | 频率 | 说明 |
+|------|------|------|------|
+| `mo-iv-sync` | 16:00 | 交易日 | 同步 MO/HO/IO IV 数据（Tushare） |
+| `mo-underlying-sync` | 16:30 | 交易日 | 同步标的日线数据（000852/IM/512100/A00） |
+| `mo-quality-check` | 18:00 | 每日 | MO 数据质量检查 |
+| `mo-contract-sync` | 10:00 | 每周六 | MO 合约主表同步 |
+
+#### CLI 命令
+
+```bash
+cd C:\myspace\tz-data
+
+# 运行每日同步（IV + 标的日线）
+.venv/Scripts/python.exe -m tzdata_pkg.cli.daily_sync sync
+
+# 仅同步 IV
+.venv/Scripts/python.exe -m tzdata_pkg.cli.daily_sync iv
+
+# 仅同步标的日线
+.venv/Scripts/python.exe -m tzdata_pkg.cli.daily_sync underlying 000852 IM A00
+
+# 补采历史数据
+.venv/Scripts/python.exe -m tzdata_pkg.cli.daily_sync backfill
+
+# 同步 MO 合约主表
+.venv/Scripts/python.exe -c "from tzdata_pkg.cli.sync_mo_contracts import sync_mo_contracts; print(sync_mo_contracts())"
+```
+
+#### 数据存储
+
+所有 MO 数据写入 `tzdata_trading.db`：
+
+| 表名 | 数据内容 |
+|------|----------|
+| `option_sim_iv_series` | 期权 IV 序列数据（含 Greeks） |
+| `option_sim_underlying_daily` | 标的日线行情数据 |
+| `mo_contract_master` | MO 合约主表 |
+
+#### 数据源
+
+- **IV 数据**: Tushare `opt_daily` API，支持 MO/HO/IO 三个品种
+- **标的日线**: akshare（000852 指数、IM 期货、A00 A50）+ sina 直连（512100 ETF）
+- **合约信息**: Tushare `opt_basic`
+
+#### 数据质量检查
+
+```python
+from tzdata_pkg.maintenance.monitoring.mo_data_quality import check_data_quality_summary
+import json
+print(json.dumps(check_data_quality_summary(), indent=2, ensure_ascii=False))
+```
+
+检查项包括：
+- IV 数据新鲜度（滞后天数）
+- 标的日线数据新鲜度
+- 跨表一致性（IV/指数/标的日期对齐）
 
 ---
 

@@ -322,7 +322,7 @@ CREATE TABLE IF NOT EXISTS option_sim_trades (
 CREATE TABLE IF NOT EXISTS option_sim_iv_series (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     strategy_id INTEGER,
-    date TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
     iv_value REAL,
     iv_percentile REAL,
     iv_rank REAL,
@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS option_sim_iv_series (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_iv_series_date ON option_sim_iv_series(date);
+CREATE INDEX IF NOT EXISTS idx_iv_series_date ON option_sim_iv_series(trade_date);
 
 CREATE TABLE IF NOT EXISTS paper_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

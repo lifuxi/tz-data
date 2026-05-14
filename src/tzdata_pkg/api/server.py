@@ -10,6 +10,7 @@ from tzdata_pkg.api.routes.trading import router as trading_router
 from tzdata_pkg.api.routes.analysis import router as analysis_router
 from tzdata_pkg.api.routes.admin import router as admin_router
 from tzdata_pkg.api.routes.maintenance import router as maintenance_router
+from tzdata_pkg.api.routes.data_layer import router as data_layer_router
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,13 @@ async def lifespan(app: FastAPI):
         logger.info("Calendar schema migration v3 applied")
     except Exception as e:
         logger.warning(f"Calendar migration v3 failed: {e}")
+
+    try:
+        from tzdata_pkg.maintenance.metadata.migrate_data_layer_v4 import migrate
+        migrate()
+        logger.info("Data layer schema migration v4 applied")
+    except Exception as e:
+        logger.warning(f"Data layer migration v4 failed: {e}")
 
     # Startup: preload calendar cache
     try:
@@ -48,3 +56,4 @@ app.include_router(trading_router, prefix="/api/v1", tags=["trading"])
 app.include_router(analysis_router, prefix="/api/v1", tags=["analysis"])
 app.include_router(admin_router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(maintenance_router)  # maintenance_router already has prefix
+app.include_router(data_layer_router, prefix="/api/v1")

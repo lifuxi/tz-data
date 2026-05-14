@@ -157,3 +157,68 @@ class AkshareClient:
         if df is None or df.empty:
             return pd.DataFrame()
         return df
+
+    def fetch_etf_daily(self, etf_code: str,
+                        start_date: str = "20200101",
+                        end_date: str = "20300101",
+                        adjust: str = "qfq") -> pd.DataFrame:
+        """
+        Fetch ETF daily bar data via sina finance direct HTTP.
+
+        Args:
+            etf_code: ETF code (e.g. '512100')
+            start_date: Start date YYYYMMDD
+            end_date: End date YYYYMMDD
+            adjust: Ignored (sina provides qfq data)
+
+        Returns:
+            DataFrame with columns: date, open, high, low, close, volume
+        """
+        self.logger.info(f"Fetching ETF daily: {etf_code} from sina finance")
+        df = _retry_call(self._fetch_etf_from_sina, etf_code, max_retries=3)
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        # Filter by date range
+        if 'date' in df.columns:
+            sd = start_date[:4] + '-' + start_date[4:6] + '-' + start_date[6:]
+            ed = end_date[:4] + '-' + end_date[4:6] + '-' + end_date[6:]
+            df = df.copy()
+            df = df[(df['date'] >= sd) & (df['date'] <= ed)]
+
+        return df
+
+    @staticmethod
+    def _fetch_etf_from_sina(etf_code: str) -> pd.DataFrame:
+        """Fetch ETF daily K-line from sina finance HTTP API."""
+        import json
+        import urllib.request
+
+        url = (
+            f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            f"CN_MarketData.getKLineData?symbol=sh{etf_code}&scale=240&ma=no&datalen=2000"
+        )
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        resp = urllib.request.urlopen(req, timeout=30)
+        raw = resp.read().decode('gbk', errors='replace')
+        records = json.loads(raw)
+
+        if not records:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(records)
+        df = df.rename(columns={
+            'day': 'date',
+            'open': 'open',
+            'high': 'high',
+            'low': 'low',
+            'close': 'close',
+            'volume': 'volume',
+        })
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        df['open'] = pd.to_numeric(df['open'], errors='coerce')
+        df['high'] = pd.to_numeric(df['high'], errors='coerce')
+        df['low'] = pd.to_numeric(df['low'], errors='coerce')
+        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+
+        return df

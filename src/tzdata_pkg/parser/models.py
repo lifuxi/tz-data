@@ -82,6 +82,10 @@ class TransactionRecord:
     instrument_type: str = "future"
     option_type: Optional[str] = None
 
+    # Enhanced fields (requirements: tz-data data layer)
+    trade_time: Optional[str] = None     # HH:MM:SS，成交时间
+    order_type: Optional[str] = None     # 市价/限价/对手价
+
 
 @dataclass
 class PositionRecord:

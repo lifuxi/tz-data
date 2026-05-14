@@ -9,6 +9,7 @@ import click
 
 from tzdata_pkg.parser.bill_parser import BillParser
 from tzdata_pkg.parser.models import BillSummary, TransactionRecord, PositionRecord
+from tzdata_pkg.config import get_data_dir
 
 import logging
 logger = logging.getLogger(__name__)
@@ -89,6 +90,9 @@ class BillImportService:
         bill_id = self._store_bill(self.trading_db_path, file_path, summary)
         self._store_bill(self.bills_db_path, file_path, summary)
 
+        # Store fund flows (bill_fund_flows table) — only to trading db
+        flow_count = self._store_fund_flows(self.trading_db_path, bill_id, result)
+
         # Store transactions
         txn_count = 0
         for txn in result.transactions:
@@ -102,6 +106,12 @@ class BillImportService:
             self._store_position(self.trading_db_path, summary, pos)
             self._store_position(self.bills_db_path, summary, pos)
             pos_count += 1
+
+        # Run post-processing: snapshot + reconciliation
+        try:
+            self._run_post_processing(bill_id, summary)
+        except Exception as e:
+            logger.warning(f"Post-processing failed for bill {bill_id}: {e}")
 
         stats["success"] += 1
         stats["bills_imported"] += 1
@@ -197,32 +207,71 @@ class BillImportService:
     def _store_transaction(self, db_path: str, bill_id: int, account_id: str, txn: TransactionRecord) -> None:
         """Insert a transaction as a flattened trade record."""
         conn = sqlite3.connect(db_path)
-        conn.execute(
-            """INSERT INTO trades (
-               account_id, year, month, trade_date, exchange, product,
-               instrument, direction, offset_flag, volume, price, turnover,
-               commission, total_pnl, premium, trade_id, position_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                account_id,
-                txn.date.year,
-                txn.date.month,
-                txn.date.strftime("%Y%m%d"),
-                txn.exchange,
-                txn.product,
-                txn.instrument,
-                DIRECTION_MAP.get(txn.direction, txn.direction),
-                OFFSET_MAP.get(txn.open_close, txn.open_close),
-                txn.lots,
-                txn.price,
-                txn.turnover,
-                txn.fee,
-                txn.realized_pl,
-                txn.premium,
-                txn.trans_no,
-                "option" if txn.instrument_type == "option" else "future",
+
+        # Check if new columns exist
+        trade_cols = [c[1] for c in conn.execute("PRAGMA table_info(trades)").fetchall()]
+        has_trade_time = 'trade_time' in trade_cols
+        has_order_type = 'order_type' in trade_cols
+        has_strategy_tag = 'strategy_tag' in trade_cols
+
+        if has_trade_time and has_order_type and has_strategy_tag:
+            conn.execute(
+                """INSERT INTO trades (
+                   account_id, year, month, trade_date, exchange, product,
+                   instrument, direction, offset_flag, volume, price, turnover,
+                   commission, total_pnl, premium, trade_id, position_type,
+                   trade_time, order_type, strategy_tag)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    account_id,
+                    txn.date.year,
+                    txn.date.month,
+                    txn.date.strftime("%Y%m%d"),
+                    txn.exchange,
+                    txn.product,
+                    txn.instrument,
+                    DIRECTION_MAP.get(txn.direction, txn.direction),
+                    OFFSET_MAP.get(txn.open_close, txn.open_close),
+                    txn.lots,
+                    txn.price,
+                    txn.turnover,
+                    txn.fee,
+                    txn.realized_pl,
+                    txn.premium,
+                    txn.trans_no,
+                    "option" if txn.instrument_type == "option" else "future",
+                    txn.trade_time,
+                    txn.order_type,
+                    None,  # strategy_tag — set by user tagging or auto-inference later
+                )
             )
-        )
+        else:
+            conn.execute(
+                """INSERT INTO trades (
+                   account_id, year, month, trade_date, exchange, product,
+                   instrument, direction, offset_flag, volume, price, turnover,
+                   commission, total_pnl, premium, trade_id, position_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    account_id,
+                    txn.date.year,
+                    txn.date.month,
+                    txn.date.strftime("%Y%m%d"),
+                    txn.exchange,
+                    txn.product,
+                    txn.instrument,
+                    DIRECTION_MAP.get(txn.direction, txn.direction),
+                    OFFSET_MAP.get(txn.open_close, txn.open_close),
+                    txn.lots,
+                    txn.price,
+                    txn.turnover,
+                    txn.fee,
+                    txn.realized_pl,
+                    txn.premium,
+                    txn.trans_no,
+                    "option" if txn.instrument_type == "option" else "future",
+                )
+            )
         conn.commit()
         conn.close()
 
@@ -288,6 +337,66 @@ class BillImportService:
             )
         conn.commit()
         conn.close()
+
+    def _store_fund_flows(self, db_path: str, bill_id: int, result) -> int:
+        """将解析结果中的资金变动写入 bill_fund_flows 表。
+
+        Args:
+            db_path: 数据库路径
+            bill_id: 账单 ID
+            result: BillParseResult
+
+        Returns:
+            插入的记录数
+        """
+        flows = BillParser.extract_fund_flows(result, bill_id)
+        if not flows:
+            return 0
+
+        conn = sqlite3.connect(db_path)
+        count = 0
+        for f in flows:
+            conn.execute(
+                """INSERT INTO bill_fund_flows
+                   (bill_id, trade_date, flow_type, amount, symbol, description)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    f['bill_id'],
+                    f['trade_date'],
+                    f['flow_type'],
+                    round(f['amount'], 4),
+                    f.get('symbol'),
+                    f.get('description'),
+                )
+            )
+            count += 1
+        conn.commit()
+        conn.close()
+        logger.debug(f"Stored {count} fund flows for bill {bill_id}")
+        return count
+
+    def _run_post_processing(self, bill_id: int, summary: BillSummary) -> None:
+        """运行账单后处理：资金流水分类 + 日终快照 + 余额勾稽校验。
+
+        调用 tz2.0 的 BillStorage.post_process_bill 方法（如果可用）。
+        """
+        try:
+            from src.data.bill_storage import BillStorage
+            from src.infrastructure.db.database import get_sync_db_session
+
+            with get_sync_db_session() as session:
+                storage = BillStorage(session)
+                result = storage.post_process_bill(bill_id)
+                classified = result.get("classified_count", 0)
+                snapshots = result.get("snapshots_generated", 0)
+                logger.info(
+                    f"Post-processed bill {bill_id}: "
+                    f"{classified} classified flows, {snapshots} snapshots"
+                )
+        except ImportError:
+            logger.debug("BillStorage not available, skipping post-processing")
+        except Exception as e:
+            logger.warning(f"Post-processing for bill {bill_id} failed: {e}")
 
     def _publish_bill_imported(self, bill_id: int, summary: BillSummary) -> None:
         """Publish Redis pub/sub event to notify tz2.0 for post-processing."""

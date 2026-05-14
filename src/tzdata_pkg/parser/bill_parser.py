@@ -265,6 +265,9 @@ class BillParser:
         [5]=instrument  [6]=direction(买/卖)  [7]=hedge_type(投/保)  [8]=price
         [9]=lots  [10]=turnover  [11]=open_close(开平)  [12]=fee
         [13]=realized_pl  [14]=premium  [15]=trans_no  [16]=account_id
+
+        Enhanced columns (if present in newer bill format):
+        trade_time (HH:MM:SS), order_type (市价/限价)
         """
         transactions = []
 
@@ -279,6 +282,20 @@ class BillParser:
 
         section_text = txn_section.group(1)
         lines = section_text.strip().split('\n')
+
+        # Detect header columns to find trade_time and order_type positions
+        header_line = ""
+        for line in lines:
+            if '---' in line or not line.startswith('|'):
+                continue
+            fields = [f.strip() for f in line.split('|')]
+            # Header contains English labels like Date, InvestUnit, etc.
+            if any(kw in line for kw in ['Date', 'InvestUnit', 'B/S', 'Price']):
+                header_line = line
+                break
+
+        col_indices = self._detect_transaction_columns(header_line)
+
         for line in lines:
             if not line.startswith('|') or '---' in line:
                 continue
@@ -315,6 +332,24 @@ class BillParser:
                     except ValueError:
                         return default
 
+                # Extract trade_time if column detected
+                trade_time = None
+                if col_indices.get('trade_time') is not None:
+                    idx = col_indices['trade_time']
+                    if idx < len(data_fields):
+                        tt = data_fields[idx].strip()
+                        if re.match(r'\d{2}:\d{2}:\d{2}', tt):
+                            trade_time = tt
+
+                # Extract order_type if column detected
+                order_type = None
+                if col_indices.get('order_type') is not None:
+                    idx = col_indices['order_type']
+                    if idx < len(data_fields):
+                        ot = data_fields[idx].strip()
+                        if ot and ot not in ('买/卖', 'B/S'):
+                            order_type = ot
+
                 transactions.append(TransactionRecord(
                     date=txn_date,
                     invest_unit=data_fields[1],
@@ -334,13 +369,36 @@ class BillParser:
                     trans_no=data_fields[15],
                     account_id=data_fields[16] if len(data_fields) > 16 else "",
                     instrument_type=instrument_type,
-                    option_type=option_type
+                    option_type=option_type,
+                    trade_time=trade_time,
+                    order_type=order_type
                 ))
             except (ValueError, IndexError) as e:
                 logger.debug(f"Skipping transaction line: {e}")
                 continue
 
         return transactions
+
+    def _detect_transaction_columns(self, header_line: str) -> dict:
+        """Detect transaction column positions from header line.
+
+        Returns dict mapping column names to their 0-based index within data_fields.
+        """
+        indices = {}
+        if not header_line:
+            return indices
+
+        fields = [f.strip().lower() for f in header_line.split('|')]
+        for i, f in enumerate(fields):
+            if 'time' in f and ('date' not in f):
+                # Trade time column (not date)
+                indices['trade_time'] = i - 1  # -1 because data_fields skips first empty pipe
+            elif '委托' in f or 'order' in f and 'type' in f:
+                indices['order_type'] = i - 1
+            elif 'order_type' in f or 'ordertype' in f:
+                indices['order_type'] = i - 1
+
+        return indices
 
     def _parse_positions(self, content: str, file_path: str) -> List[PositionRecord]:
         """Parse position records.
@@ -464,3 +522,114 @@ class BillParser:
             return 'future', None
 
         return 'future', None
+
+    @staticmethod
+    def extract_fund_flows(result: BillParseResult, bill_id: int) -> List[dict]:
+        """从解析结果提取标准化资金流水记录。
+
+        将 deposit 和 transaction 记录转换为 bill_fund_flows 格式。
+
+        Args:
+            result: BillParseResult
+            bill_id: 账单 ID
+
+        Returns:
+            资金流水记录列表，每个为 dict，对应 bill_fund_flows 表字段
+        """
+        flows = []
+
+        # 1. 出入金记录 → deposit / withdrawal flow_type
+        for dep in result.deposits:
+            date_str = dep.date.isoformat() if hasattr(dep.date, 'isoformat') else str(dep.date)
+            if dep.deposit > 0:
+                flows.append({
+                    'bill_id': bill_id,
+                    'trade_date': date_str,
+                    'flow_type': 'deposit',
+                    'amount': dep.deposit,
+                    'symbol': None,
+                    'description': dep.note or f"入金 - {dep.type}",
+                })
+            if dep.withdrawal > 0:
+                flows.append({
+                    'bill_id': bill_id,
+                    'trade_date': date_str,
+                    'flow_type': 'withdrawal',
+                    'amount': -dep.withdrawal,  # 出金为负
+                    'symbol': None,
+                    'description': f"出金 - {dep.type}",
+                })
+
+        # 2. 成交记录 → 按日期+合约聚合 fee/premium/realized_pl
+        txn_agg = {}  # (date, instrument) -> {fee, premium, realized_pl}
+        for txn in result.transactions:
+            date_str = txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date)
+            key = (date_str, txn.instrument)
+            if key not in txn_agg:
+                txn_agg[key] = {
+                    'date': date_str,
+                    'instrument': txn.instrument,
+                    'fee': 0.0,
+                    'premium': 0.0,
+                    'realized_pl': 0.0,
+                }
+            txn_agg[key]['fee'] += txn.fee or 0
+            txn_agg[key]['premium'] += txn.premium or 0
+            txn_agg[key]['realized_pl'] += txn.realized_pl or 0
+
+        for agg in txn_agg.values():
+            if agg['fee'] != 0:
+                flows.append({
+                    'bill_id': bill_id,
+                    'trade_date': agg['date'],
+                    'flow_type': 'commission',
+                    'amount': -agg['fee'],  # 手续费为负
+                    'symbol': agg['instrument'],
+                    'description': f"手续费 - {agg['instrument']}",
+                })
+            if agg['premium'] != 0:
+                if agg['premium'] > 0:
+                    flow_type = 'premium_income'
+                else:
+                    flow_type = 'premium_expense'
+                flows.append({
+                    'bill_id': bill_id,
+                    'trade_date': agg['date'],
+                    'flow_type': flow_type,
+                    'amount': agg['premium'],
+                    'symbol': agg['instrument'],
+                    'description': f"权利金 - {agg['instrument']}",
+                })
+            if agg['realized_pl'] != 0:
+                flows.append({
+                    'bill_id': bill_id,
+                    'trade_date': agg['date'],
+                    'flow_type': 'realized_pnl',
+                    'amount': agg['realized_pl'],
+                    'symbol': agg['instrument'],
+                    'description': f"平仓盈亏 - {agg['instrument']}",
+                })
+
+        # 3. 汇总级流水（从 BillSummary 提取盯市盈亏、行权盈亏等）
+        if result.summary:
+            date_str = result.summary.bill_date_end.isoformat()
+            if result.summary.mtm_pl != 0:
+                flows.append({
+                    'bill_id': bill_id,
+                    'trade_date': date_str,
+                    'flow_type': 'unrealized_pnl',
+                    'amount': result.summary.mtm_pl,
+                    'symbol': None,
+                    'description': '持仓盯市盈亏',
+                })
+            if result.summary.exercise_pl != 0:
+                flows.append({
+                    'bill_id': bill_id,
+                    'trade_date': date_str,
+                    'flow_type': 'exercise_pnl',
+                    'amount': result.summary.exercise_pl,
+                    'symbol': None,
+                    'description': '期权行权盈亏',
+                })
+
+        return flows
