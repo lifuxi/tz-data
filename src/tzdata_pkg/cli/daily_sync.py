@@ -330,14 +330,13 @@ def _parse_strike(ts_code: str) -> float:
 
 
 def _parse_opt_type(ts_code: str) -> str:
-    """MO2505C8500.CFFEX -> call"""
+    """MO2505C8500.CFFEX -> call, MO2505P8500.CFFEX -> put"""
+    import re
     base = ts_code.split(".")[0] if "." in ts_code else ts_code
-    if 'C' in base.split('-')[0] if '-' in base else base:
-        # Find C or P after the date digits
-        import re
-        match = re.match(r"^[A-Z]+\d{4,6}([CP])", base)
-        if match:
-            return 'call' if match.group(1) == 'C' else 'put'
+    # Find C or P after the date digits (not in underlying name)
+    match = re.match(r"^[A-Z]+\d{4,6}([CP])", base)
+    if match:
+        return 'call' if match.group(1) == 'C' else 'put'
     return None
 
 
