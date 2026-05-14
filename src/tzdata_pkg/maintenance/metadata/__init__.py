@@ -1,0 +1,1 @@
+"""Metadata management sub-module."""

@@ -1,0 +1,102 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import Layout from '@/components/layout/MainLayout.vue'
+
+const routes = [
+  {
+    path: '/',
+    component: Layout,
+    redirect: '/dashboard',
+    children: [
+      // ===== 数据维护 =====
+      {
+        path: '/dashboard',
+        name: 'Dashboard',
+        component: () => import('@/views/Dashboard.vue'),
+        meta: { title: '数据维护看板', icon: 'DataLine', group: '数据维护', order: 10 }
+      },
+      {
+        path: '/catalogs',
+        name: 'Catalogs',
+        component: () => import('@/views/CatalogList.vue'),
+        meta: { title: '数据目录', icon: 'List', group: '数据维护', order: 20 }
+      },
+      {
+        path: '/sync-tasks',
+        name: 'SyncTasks',
+        component: () => import('@/views/SyncTaskList.vue'),
+        meta: { title: '同步任务', icon: 'Refresh', group: '数据维护', order: 30 }
+      },
+      {
+        path: '/health-snapshots',
+        name: 'HealthSnapshots',
+        component: () => import('@/views/HealthSnapshotList.vue'),
+        meta: { title: '健康快照', icon: 'Monitor', group: '数据维护', order: 40 }
+      },
+      // ===== 基础数据 =====
+      {
+        path: '/exchanges',
+        name: 'Exchanges',
+        component: () => import('@/views/ExchangeList.vue'),
+        meta: { title: '交易所管理', icon: 'OfficeBuilding', group: '基础数据', order: 50 }
+      },
+      {
+        path: '/products',
+        name: 'Products',
+        component: () => import('@/views/ProductList.vue'),
+        meta: { title: '品种管理', icon: 'Box', group: '基础数据', order: 60 }
+      },
+      // ===== 交易日历 =====
+      {
+        path: '/trade-calendar',
+        name: 'TradeCalendar',
+        component: () => import('@/views/TradeCalendarList.vue'),
+        meta: { title: '交易日历', icon: 'Calendar', group: '交易日历', order: 80 }
+      },
+      {
+        path: '/product-calendar',
+        name: 'ProductCalendar',
+        component: () => import('@/views/TradeCalendarList.vue'),
+        meta: { title: '商品日历', icon: 'Box', group: '交易日历', order: 85 }
+      },
+      {
+        path: '/contracts',
+        name: 'Contracts',
+        component: () => import('@/views/ContractList.vue'),
+        meta: { title: '合约管理', icon: 'Files', group: '交易日历', order: 90 }
+      },
+      // ===== 账单与账户 =====
+      {
+        path: '/accounts',
+        name: 'Accounts',
+        component: () => import('@/views/AccountList.vue'),
+        meta: { title: '账户管理', icon: 'User', group: '账单与账户', order: 90 }
+      },
+      {
+        path: '/statements',
+        name: 'Statements',
+        component: () => import('@/views/StatementList.vue'),
+        meta: { title: '账单管理', icon: 'Document', group: '账单与账户', order: 100 }
+      },
+      // ===== 系统 =====
+      {
+        path: '/data-sources',
+        name: 'DataSources',
+        component: () => import('@/views/DataSourceConfig.vue'),
+        meta: { title: '数据源配置', icon: 'Connection', group: '系统', order: 110 }
+      },
+      {
+        path: '/alerts',
+        name: 'Alerts',
+        component: () => import('@/views/AlertList.vue'),
+        meta: { title: '告警历史', icon: 'Bell', group: '系统', order: 120 }
+      }
+    ]
+  }
+]
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes
+})
+
+export default router

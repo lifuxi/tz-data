@@ -1,0 +1,309 @@
+@echo off
+REM ============================================
+REM tz-data 项目统一启动脚本 (Windows)
+REM 版本: 1.0
+REM 日期: 2026-05-11
+REM ============================================
+
+setlocal EnableDelayedExpansion
+
+REM 颜色定义
+set "GREEN=[92m"
+set "YELLOW=[93m"
+set "RED=[91m"
+set "BLUE=[94m"
+set "RESET=[0m"
+
+REM 端口配置
+set "BACKEND_PORT=8000"
+set "FRONTEND_PORT=3000"
+set "REDIS_PORT=6379"
+set "POSTGRES_PORT=5432"
+set "QUESTDB_PORT=8812"
+
+REM 路径配置
+set "PROJECT_ROOT=%~dp0"
+set "BACKEND_DIR=%PROJECT_ROOT%"
+set "FRONTEND_DIR=%PROJECT_ROOT%frontend"
+
+echo.
+echo ========================================
+echo   tz-data 项目启动管理器
+echo ========================================
+echo.
+
+:menu
+echo 请选择要执行的操作:
+echo.
+echo   1. 启动所有服务 (基础设施 + 后端 + 前端)
+echo   2. 启动基础设施 (Redis + PostgreSQL + QuestDB)
+echo   3. 启动后端服务 (FastAPI + Celery)
+echo   4. 启动前端服务 (Vite Dev Server)
+echo   5. 停止所有服务
+echo   6. 检查服务状态
+echo   7. 查看日志
+echo   8. 退出
+echo.
+set /p choice="请输入选项 (1-8): "
+
+if "%choice%"=="1" goto start_all
+if "%choice%"=="2" goto start_infrastructure
+if "%choice%"=="3" goto start_backend
+if "%choice%"=="4" goto start_frontend
+if "%choice%"=="5" goto stop_all
+if "%choice%"=="6" goto check_status
+if "%choice%"=="7" goto view_logs
+if "%choice%"=="8" goto end
+goto menu
+
+:start_all
+echo.
+echo %GREEN%正在启动所有服务...%RESET%
+echo.
+call :start_infrastructure
+timeout /t 5 /nobreak >nul
+call :start_backend
+timeout /t 3 /nobreak >nul
+call :start_frontend
+goto menu
+
+:start_infrastructure
+echo.
+echo %BLUE%=== 启动基础设施 ===%RESET%
+echo.
+
+REM 检查 Docker 是否运行
+docker info >nul 2>&1
+if errorlevel 1 (
+    echo %RED%Docker 未运行，请先启动 Docker Desktop%RESET%
+    pause
+    goto menu
+)
+
+REM 启动 Redis
+echo 启动 Redis...
+docker ps | findstr "redis" >nul
+if errorlevel 1 (
+    docker run -d -p %REDIS_PORT%:%REDIS_PORT% --name tz-redis redis
+    echo %GREEN%? Redis 已启动 (端口 %REDIS_PORT%)%RESET%
+) else (
+    echo %YELLOW%! Redis 已在运行%RESET%
+)
+
+REM 启动 PostgreSQL
+echo 启动 PostgreSQL...
+docker ps | findstr "postgres" >nul
+if errorlevel 1 (
+    docker run -d -p %POSTGRES_PORT%:%POSTGRES_PORT% ^
+        --name tz-postgres ^
+        -e POSTGRES_PASSWORD=postgres ^
+        postgres:15
+    echo %GREEN%? PostgreSQL 已启动 (端口 %POSTGRES_PORT%)%RESET%
+) else (
+    echo %YELLOW%! PostgreSQL 已在运行%RESET%
+)
+
+REM 启动 QuestDB
+echo 启动 QuestDB...
+docker ps | findstr "questdb" >nul
+if errorlevel 1 (
+    docker run -d -p %QUESTDB_PORT%:%QUESTDB_PORT% ^
+        --name tz-questdb ^
+        questdb/questdb
+    echo %GREEN%? QuestDB 已启动 (端口 %QUESTDB_PORT%)%RESET%
+) else (
+    echo %YELLOW%! QuestDB 已在运行%RESET%
+)
+
+echo.
+echo %GREEN%基础设施启动完成！%RESET%
+pause
+goto :eof
+
+:start_backend
+echo.
+echo %BLUE%=== 启动后端服务 ===%RESET%
+echo.
+
+cd /d "%BACKEND_DIR%"
+
+REM 检查 Python 环境
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo %RED%Python 未安装或未添加到 PATH%RESET%
+    pause
+    goto menu
+)
+
+REM 启动 Celery Worker (后台)
+echo 启动 Celery Worker...
+start "Celery Worker" cmd /k "cd /d %BACKEND_DIR% && celery -A tzdata_pkg.scheduler.celery_app worker --loglevel=info"
+echo %GREEN%? Celery Worker 已启动 (新窗口)%RESET%
+timeout /t 2 /nobreak >nul
+
+REM 启动 FastAPI (后台)
+echo 启动 FastAPI 服务...
+start "FastAPI Backend" cmd /k "cd /d %BACKEND_DIR% && uvicorn tzdata_pkg.api.server:app --reload --host 0.0.0.0 --port %BACKEND_PORT%"
+echo %GREEN%? FastAPI 已启动 (端口 %BACKEND_PORT%, 新窗口)%RESET%
+timeout /t 3 /nobreak >nul
+
+echo.
+echo %GREEN%后端服务启动完成！%RESET%
+echo API 文档: http://localhost:%BACKEND_PORT%/docs
+pause
+goto :eof
+
+:start_frontend
+echo.
+echo %BLUE%=== 启动前端服务 ===%RESET%
+echo.
+
+cd /d "%FRONTEND_DIR%"
+
+REM 检查 Node.js 环境
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo %RED%Node.js 未安装或未添加到 PATH%RESET%
+    pause
+    goto menu
+)
+
+REM 检查 node_modules
+if not exist "node_modules" (
+    echo 首次运行，正在安装依赖...
+    call npm install
+)
+
+REM 启动 Vite Dev Server
+echo 启动 Vite 开发服务器...
+start "Frontend Dev Server" cmd /k "cd /d %FRONTEND_DIR% && npm run dev"
+echo %GREEN%? 前端服务已启动 (端口 %FRONTEND_PORT%, 新窗口)%RESET%
+timeout /t 3 /nobreak >nul
+
+echo.
+echo %GREEN%前端服务启动完成！%RESET%
+echo 访问地址: http://localhost:%FRONTEND_PORT%
+pause
+goto :eof
+
+:stop_all
+echo.
+echo %RED%=== 停止所有服务 ===%RESET%
+echo.
+
+REM 停止 Docker 容器
+echo 停止 Docker 容器...
+docker stop tz-redis tz-postgres tz-questdb 2>nul
+echo %GREEN%? Docker 容器已停止%RESET%
+
+REM 停止后端进程
+echo 停止后端进程...
+taskkill /F /FI "WINDOWTITLE eq Celery Worker*" /T 2>nul
+taskkill /F /FI "WINDOWTITLE eq FastAPI Backend*" /T 2>nul
+echo %GREEN%? 后端进程已停止%RESET%
+
+REM 停止前端进程
+echo 停止前端进程...
+taskkill /F /FI "WINDOWTITLE eq Frontend Dev Server*" /T 2>nul
+echo %GREEN%? 前端进程已停止%RESET%
+
+echo.
+echo %GREEN%所有服务已停止！%RESET%
+pause
+goto :eof
+
+:check_status
+echo.
+echo %BLUE%=== 服务状态检查 ===%RESET%
+echo.
+
+REM 检查 Docker 容器
+echo Docker 容器状态:
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" ^| findstr "tz-"
+if errorlevel 1 echo   无运行中的容器
+echo.
+
+REM 检查后端进程
+echo 后端进程:
+tasklist /FI "WINDOWTITLE eq Celery Worker*" /FO TABLE 2>nul | findstr "python"
+tasklist /FI "WINDOWTITLE eq FastAPI Backend*" /FO TABLE 2>nul | findstr "uvicorn"
+echo.
+
+REM 检查前端进程
+echo 前端进程:
+tasklist /FI "WINDOWTITLE eq Frontend Dev Server*" /FO TABLE 2>nul | findstr "node"
+echo.
+
+REM 检查端口占用
+echo 端口占用情况:
+netstat -ano | findstr ":%BACKEND_PORT% " | findstr "LISTENING" >nul && echo   后端端口 %BACKEND_PORT%: 已占用 || echo   后端端口 %BACKEND_PORT%: 空闲
+netstat -ano | findstr ":%FRONTEND_PORT% " | findstr "LISTENING" >nul && echo   前端端口 %FRONTEND_PORT%: 已占用 || echo   前端端口 %FRONTEND_PORT%: 空闲
+netstat -ano | findstr ":%REDIS_PORT% " | findstr "LISTENING" >nul && echo   Redis 端口 %REDIS_PORT%: 已占用 || echo   Redis 端口 %REDIS_PORT%: 空闲
+netstat -ano | findstr ":%POSTGRES_PORT% " | findstr "LISTENING" >nul && echo   PostgreSQL 端口 %POSTGRES_PORT%: 已占用 || echo   PostgreSQL 端口 %POSTGRES_PORT%: 空闲
+netstat -ano | findstr ":%QUESTDB_PORT% " | findstr "LISTENING" >nul && echo   QuestDB 端口 %QUESTDB_PORT%: 已占用 || echo   QuestDB 端口 %QUESTDB_PORT%: 空闲
+echo.
+
+pause
+goto :eof
+
+:view_logs
+echo.
+echo %BLUE%=== 查看日志 ===%RESET%
+echo.
+echo 选择要查看的日志:
+echo   1. Celery Worker 日志
+echo   2. FastAPI 日志
+echo   3. 应用日志 (logs/app.log)
+echo   4. Docker 容器日志
+echo   5. 返回主菜单
+echo.
+set /p log_choice="请输入选项 (1-5): "
+
+if "%log_choice%"=="1" (
+    echo 正在打开 Celery Worker 窗口...
+    tasklist /FI "WINDOWTITLE eq Celery Worker*" | findstr "python" >nul
+    if not errorlevel 1 (
+        echo 请切换到 "Celery Worker" 窗口查看实时日志
+    ) else (
+        echo %RED%Celery Worker 未运行%RESET%
+    )
+) else if "%log_choice%"=="2" (
+    echo 正在打开 FastAPI 窗口...
+    tasklist /FI "WINDOWTITLE eq FastAPI Backend*" | findstr "uvicorn" >nul
+    if not errorlevel 1 (
+        echo 请切换到 "FastAPI Backend" 窗口查看实时日志
+    ) else (
+        echo %RED%FastAPI 未运行%RESET%
+    )
+) else if "%log_choice%"=="3" (
+    if exist "%PROJECT_ROOT%logs\app.log" (
+        notepad "%PROJECT_ROOT%logs\app.log"
+    ) else (
+        echo %RED%日志文件不存在%RESET%
+    )
+) else if "%log_choice%"=="4" (
+    echo Docker 容器日志:
+    echo.
+    echo === Redis ===
+    docker logs tz-redis --tail 20
+    echo.
+    echo === PostgreSQL ===
+    docker logs tz-postgres --tail 20
+    echo.
+    echo === QuestDB ===
+    docker logs tz-questdb --tail 20
+) else if "%log_choice%"=="5" (
+    goto menu
+) else (
+    echo %RED%无效选项%RESET%
+)
+
+echo.
+pause
+goto :eof
+
+:end
+echo.
+echo 感谢使用 tz-data 项目启动管理器！
+echo.
+exit /b 0

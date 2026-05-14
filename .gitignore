@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Node Modules
+frontend/node_modules/
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+data/**/*.db
+data/**/*.db-journal
+data/**/*.sqlite
+data/**/*.sqlite3
+
+# QuestDB Data
+questdb-data/
+
+# Redis Dump
+dump.rdb
+
+# Logs
+*.log
+logs/
+
+# Reports
+reports/
+exports/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+.tox/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+
+# Database Lock Files
+*-shm
+*-wal
+
+# Upload Files
+uploads/
+test_upload.txt
+
+# Debug/Ad-hoc Scripts
+check_*.py
+debug_*.py
+test_*.py (not in tests/)
+quick_test.py
+
+# Claude Code
+.claude/

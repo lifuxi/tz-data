@@ -1,0 +1,627 @@
+面向本地量化交易的交易日历专业设计方案
+
+一、 系统概述与核心设计理念
+
+1.1 设计目标
+
+构建一个灵活、精确、可扩展的交易日历管理系统，支持多交易所、多产品类型、多合约生命周期的统一管理，为本地量化交易系统提供准确的时间基准。
+
+1.2 设计原则
+
+1. 分层抽象：交易所 → 产品 → 合约的层次化管理
+2. 时区统一：所有时间以UTC存储，使用时区转换为本地交易时间
+3. 版本可追溯：支持交易日历的修订和历史版本管理
+4. 灵活初始化：按需初始化，支持从交易所上市时间开始逐步构建
+5. 缓存优化：高频查询的日期判断结果进行缓存，提高性能
+
+二、 数据模型设计
+
+2.1 核心实体关系
+
+
+交易所(Exchange) → 产品(Product) → 合约(Contract) → 交易时间表(TradingSchedule)
+    |                    |                    |
+    |                    |                    +-- 到期/结算规则(ExpirationRule)
+    |                    |                    
+    +-- 交易日历(TradingCalendar)   +-- 合约生命周期事件(ContractEvent)
+    +-- 节假日(Holiday)
+
+
+2.2 详细表结构设计
+
+2.2.1 交易所表 (exchange)
+
+字段名 类型 约束 描述
+
+exchange_id VARCHAR(10) PRIMARY KEY 交易所代码，如"SHFE"、"CFFEX"
+
+exchange_name VARCHAR(50) NOT NULL 交易所全称
+
+region VARCHAR(20) NOT NULL 地区，如"CHINA"、"US"
+
+timezone VARCHAR(50) NOT NULL 交易所所在时区，如"Asia/Shanghai"
+
+established_date DATE NOT NULL 交易所成立/上市日期
+
+trading_start_date DATE NOT NULL 交易开始日期（可能晚于成立日期）
+
+is_active BOOLEAN DEFAULT TRUE 是否活跃
+
+metadata JSON DEFAULT NULL 扩展元数据
+2.2.2 产品表 (product)
+字段名 类型 约束 描述
+
+product_id VARCHAR(20) PRIMARY KEY 产品ID，如"MO"、"IF"
+
+exchange_id VARCHAR(10) FOREIGN KEY 所属交易所
+
+product_code VARCHAR(10) NOT NULL 产品代码，如"M"、"I"
+
+product_name VARCHAR(50) NOT NULL 产品名称
+
+product_type ENUM NOT NULL 产品类型：INDEX, FUTURE, OPTION, STOCK, ETF, BOND等
+
+underlying_asset VARCHAR(20) DEFAULT NULL 标的资产代码，期权期货需填写
+
+first_listing_date DATE NOT NULL 该产品首次上市日期
+
+last_delisting_date DATE DEFAULT NULL 最后退市日期（如已退市）
+
+trading_hours_template VARCHAR(50) NOT NULL 交易时间模板名称
+
+listing_rule JSON DEFAULT NULL 上市规则（如合约生成规则）
+
+is_active BOOLEAN DEFAULT TRUE 是否活跃交易
+2.2.3 合约表 (contract)
+字段名 类型 约束 描述
+
+contract_id VARCHAR(30) PRIMARY KEY 合约唯一ID，如"MO2401-C-5000"
+
+product_id VARCHAR(20) FOREIGN KEY 所属产品
+
+contract_symbol VARCHAR(20) NOT NULL 合约代码，如"MO2401"
+
+contract_type ENUM NOT NULL 类型：FUTURE, CALL, PUT, 现货等
+
+listing_date DATE NOT NULL 上市日期
+
+first_trading_date DATE NOT NULL 首个交易日
+
+last_trading_date DATE NOT NULL 最后交易日
+
+expiration_date DATE NOT NULL 到期日（期权）/最后交易日（期货）
+
+delivery_date DATE DEFAULT NULL 交割日/行权日
+
+settlement_date DATE NOT NULL 结算日
+
+strike_price DECIMAL(10,4) DEFAULT NULL 行权价（期权）
+
+option_type CHAR(1) DEFAULT NULL 期权类型：C=看涨, P=看跌
+
+is_active BOOLEAN DEFAULT TRUE 是否活跃交易
+
+is_main_contract BOOLEAN DEFAULT FALSE 是否主力合约
+2.2.4 交易日历表 (trading_calendar)
+字段名 类型 约束 描述
+
+exchange_id VARCHAR(10) FOREIGN KEY 交易所
+
+date DATE NOT NULL 日期
+
+is_trading_day BOOLEAN NOT NULL 是否为交易日
+
+day_of_week TINYINT NOT NULL 星期几（1=周一, 7=周日）
+
+is_weekend BOOLEAN NOT NULL 是否为周末
+
+is_holiday BOOLEAN NOT NULL 是否为节假日
+
+holiday_name VARCHAR(50) DEFAULT NULL 节假日名称
+
+is_workday BOOLEAN NOT NULL 是否为调休工作日
+
+special_flag VARCHAR(20) DEFAULT NULL 特殊标志，如"LAST_TRADING_DAY"
+
+trading_hours VARCHAR(200) DEFAULT NULL 特殊交易时间（如夜盘）
+
+version INT DEFAULT 1 日历版本
+
+PRIMARY KEY(exchange_id, date)
+2.2.5 交易时间模板表 (trading_hours_template)
+字段名 类型 约束 描述
+
+template_id VARCHAR(50) PRIMARY KEY 模板ID
+
+template_name VARCHAR(50) NOT NULL 模板名称
+
+exchange_id VARCHAR(10) FOREIGN KEY 交易所
+
+product_type VARCHAR(20) NOT NULL 适用产品类型
+
+normal_schedule JSON NOT NULL 正常交易时间段
+
+night_schedule JSON DEFAULT NULL 夜盘交易时间段
+
+lunch_break JSON DEFAULT NULL 午间休市时间段
+
+pre_open INTERVAL DEFAULT NULL 开盘前集合竞价时间
+
+pre_close INTERVAL DEFAULT NULL 收盘前集合竞价时间
+
+is_default BOOLEAN DEFAULT FALSE 是否为默认模板
+2.2.6 合约事件表 (contract_event)
+字段名 类型 约束 描述
+
+event_id BIGINT PRIMARY KEY 事件ID
+
+contract_id VARCHAR(30) FOREIGN KEY 合约ID
+
+event_type ENUM NOT NULL 事件类型：LISTING, TRADING_START, TRADING_END, EXPIRATION, DELIVERY, SETTLEMENT, POSITION_LIMIT_CHANGE
+
+event_date DATE NOT NULL 事件发生日期
+
+effective_time TIME DEFAULT NULL 事件生效时间
+
+description TEXT DEFAULT NULL 事件描述
+
+metadata JSON DEFAULT NULL 额外元数据
+
+三、 系统架构设计
+
+3.1 模块划分
+
+
+┌─────────────────────────────────────────────────────┐
+│                 交易日历服务 (TradingCalendarService)  │
+├─────────────────────────────────────────────────────┤
+│ 1. 交易所管理模块 (ExchangeManager)                   │
+│ 2. 产品管理模块 (ProductManager)                     │
+│ 3. 合约管理模块 (ContractManager)                     │
+│ 4. 日历生成模块 (CalendarGenerator)                  │
+│ 5. 日期计算模块 (DateCalculator)                     │
+│ 6. 缓存管理模块 (CacheManager)                       │
+└─────────────────────────────────────────────────────┘
+                            │
+┌─────────────────────────────────────────────────────┐
+│               数据存储层 (Data Storage Layer)         │
+│  - 主数据库 (PostgreSQL/MySQL)                        │
+│  - 缓存 (Redis/Memcached)                             │
+│  - 文件存储 (JSON/CSV备份)                            │
+└─────────────────────────────────────────────────────┘
+
+
+3.2 核心模块功能
+
+3.2.1 交易所管理模块 (ExchangeManager)
+
+• 交易所的增删改查
+
+• 交易所基本信息验证
+
+• 交易所时区管理
+
+• 交易所状态监控
+
+3.2.2 产品管理模块 (ProductManager)
+
+• 产品注册与配置
+
+• 产品生命周期管理
+
+• 交易时间模板关联
+
+• 产品间关系维护（如期权与标的）
+
+3.2.3 合约管理模块 (ContractManager)
+
+• 合约生成规则解析
+
+• 合约生命周期管理
+
+• 主力合约识别
+
+• 合约事件调度
+
+3.2.4 日历生成模块 (CalendarGenerator)
+
+• 按年度生成交易日历
+
+• 节假日自动识别
+
+• 特殊交易日处理
+
+• 日历版本管理
+
+3.2.5 日期计算模块 (DateCalculator)
+
+• 交易日偏移计算
+
+• 日期范围查询
+
+• 日期区间工作日计算
+
+• 时区转换处理
+
+3.2.6 缓存管理模块 (CacheManager)
+
+• 高频查询结果缓存
+
+• 缓存失效策略
+
+• 内存缓存与持久化
+
+四、 关键业务流程设计
+
+4.1 交易所初始化流程
+
+
+输入: 交易所代码(exchange_id), 开始日期(start_date)
+输出: 初始化后的交易日历
+
+1. 验证交易所是否存在，若不存在则创建
+2. 获取交易所基本信息（时区、成立日期等）
+3. 计算实际需要初始化的日期范围：
+   - 开始日期 = max(start_date, 交易所成立日期)
+   - 结束日期 = 当前年份 + 2年（预留缓冲）
+4. 调用日历生成模块生成该日期范围的交易日历
+5. 存储到数据库
+6. 预加载到缓存
+
+
+4.2 产品注册流程
+
+
+输入: 产品信息(product_info)
+输出: 注册成功的产品ID
+
+1. 验证交易所存在且有效
+2. 检查产品代码是否已存在
+3. 解析并验证交易时间模板
+4. 验证上市日期不早于交易所成立日期
+5. 保存产品信息到数据库
+6. 如果产品是期货/期权，解析并设置上市规则
+7. 返回产品ID
+
+
+4.3 合约自动生成流程
+
+
+输入: 产品ID, 年份(year), 月份(month) [可选]
+输出: 生成的合约列表
+
+1. 获取产品信息，包括上市规则(listing_rule)
+2. 解析上市规则，确定：
+   - 合约代码生成规则
+   - 上市日期计算规则
+   - 到期日计算规则
+   - 交割/结算日计算规则
+3. 根据规则生成指定时间范围内的所有合约
+4. 对每个合约：
+   a. 计算各关键日期
+   b. 验证日期有效性（是否为交易日等）
+   c. 创建合约记录
+   d. 创建合约事件记录
+5. 返回生成的合约列表
+
+
+4.4 交易日历查询优化
+
+
+设计目标: 高频查询的性能优化
+
+1. 缓存策略：
+   - 按交易所缓存最近N年的交易日历
+   - 缓存"是否为交易日"的布尔结果
+   - 缓存常用日期计算（如T+1交易日）
+
+2. 查询接口设计：
+   - is_trading_day(exchange_id, date): 返回布尔值
+   - get_next_trading_day(exchange_id, date, n=1): 返回日期
+   - get_prev_trading_day(exchange_id, date, n=1): 返回日期
+   - get_trading_days_between(start_date, end_date): 返回日期列表
+   
+3. 批量查询优化：
+   - 支持批量日期查询
+   - 使用位图(bitmap)加速区间查询
+
+
+五、 期货/期权特殊处理
+
+5.1 合约生命周期关键日期
+
+
+期货合约关键日期序列：
+1. 上市日(Listing Date) → 2. 首个交易日(First Trading Day) → 
+3. 最后交易日(Last Trading Day) → 4. 交割日(Delivery Date) → 
+5. 结算日(Settlement Date)
+
+期权合约关键日期序列：
+1. 上市日(Listing Date) → 2. 首个交易日(First Trading Day) → 
+3. 最后交易日(Last Trading Day) → 4. 到期日(Expiration Date) → 
+5. 行权日(Exercise Date) → 6. 结算日(Settlement Date)
+
+
+5.2 上市规则解析引擎
+
+设计一个规则解析引擎，支持不同产品的上市规则：
+// 示例：中证1000股指期货(MO)上市规则
+{
+  "product_id": "MO",
+  "listing_rule": {
+    "type": "MONTHLY",
+    "cycle_months": [3, 6, 9, 12],  // 季月合约
+    "months_ahead": 1,  // 提前1个月上市
+    "listing_day_rule": "FIRST_TRADING_DAY_OF_MONTH",
+    "last_trading_day_rule": "THIRD_FRIDAY",
+    "delivery_day_rule": "THIRD_FRIDAY",
+    "settlement_day_rule": "NEXT_TRADING_DAY_AFTER_DELIVERY",
+    "skip_holiday_rule": "PREVIOUS_TRADING_DAY"
+  }
+}
+
+
+5.3 主力合约识别逻辑
+
+
+输入: 产品ID, 日期(date)
+输出: 主力合约代码
+
+1. 获取该日期该产品所有活跃合约
+2. 按以下优先级识别主力合约：
+   a. 成交量最大
+   b. 持仓量最大
+   c. 到期日最近但未进入交割月
+3. 如果无数据，使用规则推算：
+   a. 季月合约规则
+   b. 展期窗口规则
+4. 返回主力合约代码
+
+
+六、 数据维护与更新策略
+
+6.1 初始数据导入
+
+1. 基础数据来源：
+   • 交易所官网公告
+
+   • 第三方数据供应商（Wind、Choice等）
+
+   • 开源数据（如akshare、Tushare的交易日历接口）
+
+2. 导入策略：
+   • 按交易所分批次导入
+
+   • 从当前日期向前回溯，直到交易所成立
+
+   • 支持增量更新
+
+6.2 定期更新机制
+
+
+每日更新流程：
+1. 检查是否有新的节假日公告
+2. 检查是否有交易时间调整
+3. 检查新合约上市
+4. 更新主力合约标识
+5. 清理过期合约（标记为不活跃）
+
+每月更新流程：
+1. 生成下月新合约
+2. 更新未来一年的节假日
+3. 备份日历数据
+
+
+6.3 版本控制与回滚
+
+1. 日历版本管理：
+   • 每次重大变更（如节假日调整）创建新版本
+
+   • 支持历史日历查询
+
+   • 支持回滚到指定版本
+
+2. 变更记录：
+   • 记录所有日历变更
+
+   • 记录变更原因和来源
+
+   • 支持审计追踪
+
+七、 API接口设计
+
+7.1 核心查询接口
+
+// 1. 日期查询接口
+interface DateQueryAPI {
+  isTradingDay(exchange: string, date: string): boolean
+  getNextTradingDay(exchange: string, date: string, offset: number): string
+  getPrevTradingDay(exchange: string, date: string, offset: number): string
+  getTradingDaysBetween(exchange: string, start: string, end: string): string[]
+  getTradingDaysCount(exchange: string, start: string, end: string): number
+}
+
+// 2. 合约查询接口
+interface ContractQueryAPI {
+  getActiveContracts(product: string, date: string): Contract[]
+  getMainContract(product: string, date: string): Contract
+  getContractBySymbol(symbol: string): Contract
+  getContractEvents(contract: string, start: string, end: string): Event[]
+  getExpiringContracts(date: string, daysAhead: number): Contract[]
+}
+
+// 3. 时间查询接口
+interface TimeQueryAPI {
+  getTradingHours(product: string, date: string): TradingSession[]
+  isTradingTime(product: string, datetime: string): boolean
+  getTimeToOpen(product: string, datetime: string): number
+  getTimeToClose(product: string, datetime: string): number
+}
+
+
+7.2 管理接口
+
+// 1. 配置管理接口
+interface ConfigAPI {
+  addExchange(exchange: ExchangeConfig): boolean
+  updateExchange(exchange: string, config: Partial<ExchangeConfig>): boolean
+  addProduct(product: ProductConfig): boolean
+  updateProduct(product: string, config: Partial<ProductConfig>): boolean
+}
+
+// 2. 日历生成接口
+interface CalendarAPI {
+  generateCalendar(exchange: string, year: number): boolean
+  updateHoliday(exchange: string, date: string, isHoliday: boolean, name?: string): boolean
+  updateTradingDay(exchange: string, date: string, isTrading: boolean, reason?: string): boolean
+}
+
+// 3. 合约管理接口
+interface ContractAPI {
+  generateContracts(product: string, startDate: string, endDate: string): Contract[]
+  updateContract(contract: string, updates: Partial<Contract>): boolean
+  deactivateContract(contract: string, date: string): boolean
+}
+
+
+八、 容错与备份策略
+
+8.1 数据完整性检查
+
+1. 日常检查：
+   • 检查日期连续性
+
+   • 检查节假日逻辑一致性
+
+   • 检查合约日期逻辑（上市日≤首交易日≤最后交易日≤到期日）
+
+2. 周期性验证：
+   • 与官方日历对比
+
+   • 交叉验证不同数据源
+
+   • 交易日志回放验证
+
+8.2 备份与恢复
+
+1. 备份策略：
+   • 每日增量备份
+
+   • 每周全量备份
+
+   • 重大变更前手动备份
+
+2. 恢复流程：
+   • 支持按日期恢复
+
+   • 支持按版本恢复
+
+   • 支持部分数据恢复
+
+九、 性能优化策略
+
+9.1 数据库优化
+
+1. 索引策略：
+   -- 关键索引
+   CREATE INDEX idx_calendar_date ON trading_calendar(date);
+   CREATE INDEX idx_calendar_exchange_date ON trading_calendar(exchange_id, date);
+   CREATE INDEX idx_contract_product ON contract(product_id);
+   CREATE INDEX idx_contract_dates ON contract(first_trading_date, last_trading_date);
+   
+
+2. 分区策略：
+   • 交易日历表按年份分区
+
+   • 合约表按产品分区
+
+9.2 缓存策略
+
+1. 内存缓存：
+   • 最近3年交易日历缓存
+
+   • 活跃合约列表缓存
+
+   • 主力合约映射缓存
+
+2. 缓存更新：
+   • 定时更新
+
+   • 事件驱动更新
+
+   • 缓存穿透保护
+
+十、 监控与告警
+
+10.1 监控指标
+
+1. 数据质量监控：
+   • 缺失日期检测
+
+   • 逻辑错误检测
+
+   • 数据异常检测
+
+2. 性能监控：
+   • 查询响应时间
+
+   • 缓存命中率
+
+   • 数据库连接数
+
+10.2 告警机制
+
+1. 数据异常告警：
+   • 节假日数据缺失
+
+   • 合约日期逻辑错误
+
+   • 主力合约识别失败
+
+2. 系统异常告警：
+   • 数据库连接失败
+
+   • 缓存服务异常
+
+   • 数据同步失败
+
+十一、 实施路线图
+
+第一阶段：基础框架搭建（1-2周）
+
+1. 数据库表结构设计与创建
+2. 核心实体类定义
+3. 基础数据导入工具开发
+4. 基础查询接口实现
+
+第二阶段：核心功能开发（2-3周）
+
+1. 交易日历生成引擎
+2. 合约生命周期管理
+3. 期货/期权特殊规则处理
+4. 缓存机制实现
+
+第三阶段：高级功能完善（1-2周）
+
+1. 主力合约识别逻辑
+2. 交易时间计算
+3. 日期计算工具集
+4. 性能优化
+
+第四阶段：系统集成与测试（1周）
+
+1. 与量化交易系统集成
+2. 回测框架对接
+3. 压力测试与性能测试
+4. 文档编写
+
+十二、 成功标准
+
+1. 准确性：交易日历与官方日历100%一致
+2. 完整性：支持所有关注交易所和产品
+3. 性能：单次日期判断<1ms，批量查询<10ms
+4. 可用性：系统可用性>99.9%
+5. 可扩展性：支持新交易所、新产品快速接入
+6. 可维护性：支持日历修正和版本回滚
+
+此设计方案提供了一个完整、专业、可扩展的交易日历系统，能够满足个人量化交易对多交易所、多产品类型、多合约生命周期的全面需求。系统采用分层设计，模块清晰，易于维护和扩展。
