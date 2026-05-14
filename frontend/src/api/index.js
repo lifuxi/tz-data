@@ -233,6 +233,55 @@ export const tradeCalendarAPI = {
   },
 }
 
+export const mainContractAPI = {
+  get(productCode, date) {
+    return apiClient.get(`/main-contract/${productCode}`, { params: { date } })
+  },
+  set(productCode, date, contractCode) {
+    return apiClient.post(`/main-contract/${productCode}`, null, { params: { date, contract_code: contractCode } })
+  },
+  series(productCode, startDate, endDate) {
+    return apiClient.get(`/main-contract/${productCode}/series`, { params: { start_date: startDate, end_date: endDate } })
+  },
+  rollovers(productCode, startDate, endDate) {
+    return apiClient.get(`/main-contract/${productCode}/rollovers`, { params: { start_date: startDate, end_date: endDate } })
+  },
+  autoPopulate(productCode, startDate, endDate) {
+    return apiClient.post(`/main-contract/${productCode}/auto-populate`, null, { params: { start_date: startDate, end_date: endDate } })
+  },
+}
+
+export const specialDateAPI = {
+  list(params = {}) {
+    return apiClient.get('/trade-calendar/special-dates', { params })
+  },
+  create(data) {
+    return apiClient.post('/trade-calendar/special-dates', null, { params: data })
+  },
+  delete(exchangeCode, tradeDate) {
+    return apiClient.delete('/trade-calendar/special-dates', { params: { exchange_code: exchangeCode, trade_date: tradeDate } })
+  },
+}
+
+export const tradingHoursAPI = {
+  list() {
+    // No list endpoint, fetch individual templates
+    return Promise.resolve({ data: [] })
+  },
+  get(templateId) {
+    return apiClient.get(`/trading-hours/${templateId}`)
+  },
+  getSessions(templateId) {
+    return apiClient.get(`/trading-hours/${templateId}/sessions`)
+  },
+  isTradingTime(templateId, timeStr) {
+    return apiClient.get('/trading-hours/is-trading-time', { params: { template_id: templateId, time_str: timeStr } })
+  },
+  create(data) {
+    return apiClient.post('/trading-hours/templates', null, { params: data })
+  },
+}
+
 export const statementVerifyAPI = {
   verifyBalance(data) {
     return apiClient.post('/statements/verify-balance', data)

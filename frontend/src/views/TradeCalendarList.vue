@@ -351,19 +351,26 @@ const productCalTradingDays = ref([])
 const productCalQueried = ref(false)
 
 // 商品上市日期
-const listingDates = computed(() => {
-  const d = {}
-  // From product overview data
-  for (const p of productOverview.value) {
-    if (p.listing_date) d[p.product_code] = p.listing_date
-  }
-  // Hardcode CFFEX products
+const listingDates = ref({})
+
+const syncListingDates = async () => {
+  try {
+    const res = await axios.get('/api/maintenance/trade-calendar/product/listing-dates').catch(() => null)
+    if (res?.data?.data) {
+      for (const [k, v] of Object.entries(res.data.data)) {
+        listingDates.value[k] = v
+      }
+    }
+  } catch {}
+  // Hardcode CFFEX products as fallback
   const defaults = {
     IF: '2010-04-16', IH: '2015-04-16', IC: '2015-04-17', IM: '2022-07-22',
     HO: '2022-07-22', FO: '2022-07-22', MO: '2022-07-22'
   }
-  return { ...defaults, ...d }
-})
+  for (const [k, v] of Object.entries(defaults)) {
+    if (!listingDates.value[k]) listingDates.value[k] = v
+  }
+}
 
 const productCalTotalDays = computed(() => {
   const y = productCalForm.year
@@ -394,9 +401,8 @@ const checkStatus = async () => {
   loading.value = true
   try {
     // Get exchange calendar stats
-    const [statusRes, listingRes, productsRes, exchangesRes] = await Promise.all([
+    const [statusRes, productsRes, exchangesRes] = await Promise.all([
       axios.get('/api/maintenance/trade-calendar/status').catch(() => null),
-      axios.get('/api/maintenance/trade-calendar/product/listing-dates').catch(() => null),
       axios.get('/api/maintenance/products').catch(() => null),
       axios.get('/api/maintenance/exchanges').catch(() => null),
     ])
@@ -424,7 +430,7 @@ const checkStatus = async () => {
       }
     }
 
-    listingDates.value = listingRes?.data?.data || {}
+    await syncListingDates()
     const allProducts = productsRes?.data?.data || []
     allFutureProducts.value = allProducts.filter(p => p.product_type !== 'option')
     allOptionProducts.value = allProducts.filter(p => p.product_type === 'option')

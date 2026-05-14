@@ -64,6 +64,24 @@ const routes = [
         component: () => import('@/views/ContractList.vue'),
         meta: { title: '合约管理', icon: 'Files', group: '交易日历', order: 90 }
       },
+      {
+        path: '/main-contracts',
+        name: 'MainContracts',
+        component: () => import('@/views/MainContractList.vue'),
+        meta: { title: '主力合约', icon: 'TrendCharts', group: '交易日历', order: 91 }
+      },
+      {
+        path: '/special-dates',
+        name: 'SpecialDates',
+        component: () => import('@/views/SpecialDateList.vue'),
+        meta: { title: '特殊日期', icon: 'Calendar', group: '交易日历', order: 92 }
+      },
+      {
+        path: '/trading-hours',
+        name: 'TradingHours',
+        component: () => import('@/views/TradingHoursList.vue'),
+        meta: { title: '交易时间', icon: 'Clock', group: '交易日历', order: 93 }
+      },
       // ===== 账单与账户 =====
       {
         path: '/accounts',

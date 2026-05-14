@@ -1,6 +1,6 @@
 # tz-data 用户手册
 
-> 版本：0.5.0 | 数据维护与同步系统 | 最后更新：2026-05-13
+> 版本：0.6.0 | 数据维护与同步系统 | 最后更新：2026-05-14
 
 ## 目录
 
@@ -273,6 +273,121 @@ for exchange, stats in snapshot['by_exchange'].items():
 ```bash
 celery -A tzdata_pkg.scheduler.celery_app beat --loglevel=info
 ```
+
+---
+
+## 10. 交易日历模块 ⭐ 新增 v0.6.0
+
+### 10.1 功能概览
+
+交易日历模块提供完整的市场日期管理能力，包括：
+
+- **交易日历管理** — 维护交易所交易日历，支持节假日覆盖、非交易日标记
+- **特殊日期覆盖** — 覆盖交易日历（补市/休市），优先级高于常规日历
+- **主力合约管理** — 跟踪品种的主力合约序列，支持手动设置和持仓量驱动的自动填充
+- **交易时间模板** — 定义各品种/交易所的日盘/夜盘/集合竞价时段
+- **产品合约增强** — 产品合约表支持 `multiplier`（合约乘数）、`price_tick`（最小变动价位）、`margin_rate`（保证金率）、`option_style`（期权类型）等字段
+
+### 10.2 交易日历
+
+```python
+from tzdata_pkg.maintenance.metadata.trade_calendar_manager import TradeCalendarManager
+
+# 初始化某交易所日历（基于 Tushare 导入）
+from tzdata_pkg.cli.import_trade_calendar import ImportTradeCalendar
+ImportTradeCalendar.run(exchange="CFFEX", year_from=2025, year_to=2026)
+
+# 添加非交易日（手动）
+TradeCalendarManager.add_holiday("CFFEX", "2026-01-01", "元旦")
+
+# 查询某日是否交易日
+from tzdata_pkg.maintenance.metadata.date_calculator import DateCalculator
+print(DateCalculator.is_trading_day("CFFEX", "2026-05-14"))  # True
+```
+
+### 10.3 特殊日期覆盖
+
+```python
+from tzdata_pkg.maintenance.metadata.special_dates import SpecialDateManager
+
+# 添加补市日（日历标记非交易日但实际交易）
+SpecialDateManager.create(
+    exchange_code="CFFEX",
+    override_date="2026-01-20",
+    override_type="trading",  # trading=补市, non_trading=休市
+    reason="临时调整"
+)
+
+# 查询某日期是否有特殊覆盖
+override = SpecialDateManager.get_by_date("CFFEX", "2026-01-20")
+```
+
+特殊日期在交易日判断中优先于常规日历。
+
+### 10.4 主力合约
+
+```python
+from tzdata_pkg.maintenance.metadata.main_contract import MainContractManager
+
+# 自动填充主力合约（基于持仓量）
+MainContractManager.auto_populate(product_code="MO", start_date="2026-01-01", end_date="2026-05-14")
+
+# 手动设置某日主力合约
+MainContractManager.set_main_contract("MO", "2026-03-15", "MO2506", "手动设置")
+
+# 查询主力合约序列
+series = MainContractManager.get_series("MO", start_date="2026-01-01", end_date="2026-05-14")
+```
+
+### 10.5 交易时间模板
+
+```python
+from tzdata_pkg.maintenance.metadata.trading_hours import TradingHoursManager
+
+# 创建日盘+夜盘模板
+TradingHoursManager.create_template(
+    template_name="CFFEX-股指",
+    exchange_code="CFFEX",
+    product_type="futures",
+    normal_schedule=[("09:30", "11:30"), ("13:00", "15:00")],
+    night_schedule=[],  # 股指无夜盘
+    auction_schedule=[("09:25", "09:30")]  # 集合竞价
+)
+```
+
+### 10.6 日期计算器高级方法
+
+```python
+from tzdata_pkg.maintenance.metadata.date_calculator import DateCalculator
+
+# 获取下一个/上一个交易日
+next_day = DateCalculator.get_next_trading_day("CFFEX", "2026-05-14")
+prev_day = DateCalculator.get_prev_trading_day("CFFEX", "2026-05-14")
+
+# 两个日期之间的交易日数量
+count = DateCalculator.get_trading_days_count("CFFEX", "2026-01-01", "2026-05-14")
+
+# 从某日起加 N 个交易日
+result = DateCalculator.add_trading_days("CFFEX", "2026-05-14", 10)
+
+# 月份首个/最后个交易日
+first = DateCalculator.get_first_trading_day_of_month("CFFEX", "2026-05")
+last = DateCalculator.get_last_trading_day_of_month("CFFEX", "2026-05")
+
+# 对齐到最近的交易日
+snap = DateCalculator.snap_to_trading_day("CFFEX", "2026-05-18", direction="next")
+```
+
+### 10.7 系统初始化
+
+```bash
+# 一键初始化 1990-2026 交易日历 + 产品日历
+PYTHONPATH=src python -m tzdata_pkg.cli.calendar_system_init
+```
+
+### 10.8 CalendarCache 预热
+
+系统在启动时自动预热 `CalendarCache`，将交易日历加载到内存，避免每次查询都访问数据库。
 
 ---
 
@@ -768,9 +883,11 @@ npm run dev      # 启动开发服务器，端口 3000
 | | 同步任务 | 查看/触发同步任务 |
 | | 健康快照 | 历史健康数据 |
 | **基础数据** | 交易所管理 | 交易所配置 |
-| | 品种管理 | 品种配置 |
+| | 品种管理 | 品种配置（含乘数/最小变动/保证金率/期权类型） |
 | | 合约管理 | 合约信息维护 |
-| | 交易日历 | 节假日管理 |
+| | 交易日历 | 节假日管理、特殊日期覆盖 |
+| | 主力合约 | 主力合约序列查看与设置 |
+| | 交易时间模板 | 日盘/夜盘/集合竞价时段配置 |
 | **账单与账户** | 账户管理 | 期货账户 + CFMMC 凭证 |
 | | 账单管理 | 账单上传/解析/导入 |
 | **系统** | 数据源配置 | 数据源 + 日历 + 凭证统一管理 |
@@ -806,8 +923,15 @@ npm run dev      # 启动开发服务器，端口 3000
 
 统一管理入口，包含 3 个 Tab：
 - **数据源管理**：查看 tushare/cffex/shfe/wind 状态，测试连接
-- **交易日历**：初始化日历、添加节假日
+- **交易日历**：初始化日历、添加节假日、查看日历统计、快捷跳转至特殊日期管理
 - **账户凭证**：管理各账户的 CFMMC 凭据
+
+### 8.8 交易日历管理页
+
+- **交易日历（/trade-calendar）**：中国交易日历、按交易所查看交易日/非交易日统计、添加非交易日、系统初始化（覆盖 1990-2026 年）
+- **特殊日期（/special-dates）**：特殊日期列表、添加/删除补市或休市覆盖、按交易所和日期筛选
+- **主力合约（/main-contracts）**：选择品种 + 日期范围 → 展示主力合约序列、支持自动填充（持仓量驱动）和手动设置主力合约、展示换月日期
+- **交易时间模板（/trading-hours）**：交易时间模板列表、创建/编辑模板（日盘/夜盘/集合竞价时段）、按交易所筛选
 
 ---
 

@@ -506,14 +506,35 @@ def delete_product(product_id: int):
 
 @router.post("/contracts/import-from-tushare")
 def import_contracts_from_tushare(exchange: str = 'CFFEX', contract_type: str = 'futures'):
-    """Import contracts from Tushare API."""
+    """Import contracts from Tushare API. Auto-populates main contracts after import."""
+    import logging
+    from datetime import date, timedelta
     from tzdata_pkg.cli.import_contracts import ContractSyncService
+    from tzdata_pkg.maintenance.metadata.main_contract import MainContractService
     try:
         svc = ContractSyncService()
         if contract_type == 'options':
             result = svc.sync_options(exchange=exchange)
         else:
             result = svc.sync_futures(exchange=exchange)
+
+        # Auto-populate main contracts for CFFEX futures
+        if contract_type == 'futures' and result.get('inserted', 0) > 0:
+            try:
+                from tzdata_pkg.maintenance.metadata.product_manager import ProductManager
+                products = ProductManager.list_all(exchange_code=exchange)
+                main_svc = MainContractService()
+                today = date.today()
+                year_end = date(today.year + 1, 12, 31)
+                for p in products:
+                    try:
+                        main_svc.auto_populate(p['product_code'], today, year_end)
+                    except Exception:
+                        pass  # Skip products without quote data
+                logging.getLogger(__name__).info("Auto-populated main contracts after import")
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Auto-populate main contracts failed: {e}")
+
         return {"success": True, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

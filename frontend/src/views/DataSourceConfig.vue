@@ -51,9 +51,12 @@
                 </el-card>
               </el-col>
             </el-row>
-            <el-button type="primary" style="margin-top:16px" @click="$router.push('/trade-calendar')">
-              管理交易日历
-            </el-button>
+            <el-row :gutter="12" style="margin-top:16px">
+              <el-col :span="6"><el-button style="width:100%" @click="$router.push('/trade-calendar')">交易日历</el-button></el-col>
+              <el-col :span="6"><el-button style="width:100%" @click="$router.push('/main-contracts')">主力合约</el-button></el-col>
+              <el-col :span="6"><el-button style="width:100%" @click="$router.push('/special-dates')">特殊日期</el-button></el-col>
+              <el-col :span="6"><el-button style="width:100%" @click="$router.push('/trading-hours')">交易时间</el-button></el-col>
+            </el-row>
           </div>
         </el-tab-pane>
 
