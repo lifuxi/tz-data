@@ -133,7 +133,7 @@ def sync_underlying_daily(
     Writes to tzdata_trading.db option_sim_underlying_daily.
 
     Args:
-        underlyings: List of underlying codes (default: ['000852', 'IM', '512100', 'A00'])
+        underlyings: List of underlying codes (default: ['000852', 'IM', '512100', 'A00', '510050', '510300'])
         start_date: Start date YYYY-MM-DD (default: 1 year ago or local latest + 1)
         end_date: End date YYYY-MM-DD (default: latest CFFEX trading day)
         calendar_driven: If True, use trading calendar for date range (default True)
@@ -142,7 +142,7 @@ def sync_underlying_daily(
         dict with per-underlying sync results.
     """
     if underlyings is None:
-        underlyings = ['000852', 'IM', '512100', 'A00']
+        underlyings = ['000852', 'IM', '512100', 'A00', '510050', '510300']
 
     now = date.today()
     conn = None
@@ -260,6 +260,20 @@ def _fetch_underlying(ak, code: str) -> pd.DataFrame:
     elif code == 'A00':
         # SGX FTSE China A50
         return ak.futures_foreign_hist(symbol='FEF')
+
+    elif code == '510050':
+        # 50ETF (HO underlying)
+        sd = (date.today() - timedelta(days=365)).strftime("%Y%m%d")
+        ed = date.today().strftime("%Y%m%d")
+        from tzdata_pkg.download.akshare.client import AkshareClient
+        return AkshareClient().fetch_etf_daily('510050', start_date=sd, end_date=ed)
+
+    elif code == '510300':
+        # 300ETF (IO underlying)
+        sd = (date.today() - timedelta(days=365)).strftime("%Y%m%d")
+        ed = date.today().strftime("%Y%m%d")
+        from tzdata_pkg.download.akshare.client import AkshareClient
+        return AkshareClient().fetch_etf_daily('510300', start_date=sd, end_date=ed)
 
     else:
         logger.warning(f"Unknown underlying code: {code}")

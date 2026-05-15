@@ -52,10 +52,34 @@ celery_app.conf.update(
             'schedule': crontab(hour=16, minute=0, day_of_week='mon-fri'),
         },
 
-        # 交易日 16:30 同步标的日线数据（000852/IM/512100/A00）
+        # 交易日 16:30 同步标的日线数据（000852/IM/512100/A00/510050/510300）
         'mo-underlying-sync': {
             'task': 'tzdata_pkg.scheduler.tasks.mo_tasks.sync_underlying_daily',
             'schedule': crontab(hour=16, minute=30, day_of_week='mon-fri'),
+        },
+
+        # 交易日 17:00 MO Top20 持仓同步
+        'mo-position-sync': {
+            'task': 'tzdata_pkg.scheduler.tasks.position_tasks.sync_mo_position',
+            'schedule': crontab(hour=17, minute=0, day_of_week='mon-fri'),
+        },
+
+        # 交易日 17:05 HO Top20 持仓同步
+        'ho-position-sync': {
+            'task': 'tzdata_pkg.scheduler.tasks.position_tasks.sync_ho_position',
+            'schedule': crontab(hour=17, minute=5, day_of_week='mon-fri'),
+        },
+
+        # 交易日 17:10 IO Top20 持仓同步
+        'io-position-sync': {
+            'task': 'tzdata_pkg.scheduler.tasks.position_tasks.sync_io_position',
+            'schedule': crontab(hour=17, minute=10, day_of_week='mon-fri'),
+        },
+
+        # 交易日 17:30 MO 市场环境分析
+        'mo-market-env': {
+            'task': 'tzdata_pkg.scheduler.tasks.market_env_tasks.compute_mo_market_env',
+            'schedule': crontab(hour=17, minute=30, day_of_week='mon-fri'),
         },
 
         # 每日 18:00 MO 数据质量检查
@@ -64,7 +88,7 @@ celery_app.conf.update(
             'schedule': crontab(hour=18, minute=0),
         },
 
-        # 每周六 10:00 MO 合约主表同步
+        # 每周六 10:00 MO/HO/IO 合约主表同步
         'mo-contract-sync': {
             'task': 'tzdata_pkg.scheduler.tasks.mo_tasks.sync_mo_contracts',
             'schedule': crontab(hour=10, minute=0, day_of_week='sat'),

@@ -4,7 +4,7 @@ Celery tasks for tz-data data layer.
 Scheduled tasks:
 - 18:30  同步指数日线 (sync_index_daily) — 000852/000300
 - 18:30  计算日频 VWAP (compute_daily_vwap) — 回填 trades.vwap
-- 20:00  预计算期权希腊字母 (compute_option_greeks)
+- 20:00  预计算期权希腊字母 (compute_option_greeks) — 全量 MO 合约
 """
 import logging
 import sqlite3
@@ -104,13 +104,14 @@ def _download_and_store_index(index_code: str, start_date: str, end_date: str) -
 
 
 # ============================================================
-# Option Greeks Pre-compute
+# Option Greeks Pre-compute (full contract coverage)
 # ============================================================
 
 
 @celery_app.task
 def compute_option_greeks():
     """预计算期权希腊字母，写入 option_greeks_daily 表。
+    从 mo_contract_master 获取全量活跃合约，而非仅 trades 中的合约。
     每日 20:00 执行。
     """
     try:
@@ -118,23 +119,25 @@ def compute_option_greeks():
         trade_date = today.isoformat()
         date_str = today.strftime("%Y%m%d")
 
-        # 1. 获取当前持仓的期权合约列表
+        # 1. 获取全量活跃合约
         conn = sqlite3.connect(TZDATA_TRADING_DB)
-        option_symbols = conn.execute(
-            """SELECT DISTINCT instrument FROM trades
-               WHERE instrument LIKE '%-%-%' AND trade_date = ?""",
-            (date_str,)
-        ).fetchall()
+        contracts = conn.execute("""
+            SELECT contract_code, strike_price, option_type, expiry_date
+            FROM mo_contract_master
+            WHERE status = 'active'
+        """).fetchall()
         conn.close()
 
-        if not option_symbols:
-            logger.info("No options in today's trades, skipping Greeks precompute")
+        if not contracts:
+            logger.info("No active MO contracts, skipping Greeks precompute")
             return {
                 'status': 'completed',
                 'date': trade_date,
                 'records_stored': 0,
-                'note': 'no options traded',
+                'note': 'no active contracts',
             }
+
+        logger.info(f"Computing Greeks for {len(contracts)} active MO contracts")
 
         # 2. 通过 Tushare 获取 Greeks 数据
         total = 0
@@ -146,8 +149,8 @@ def compute_option_greeks():
             client = TushareClient(token=tushare_cfg["token"])
 
             conn = sqlite3.connect(TZDATA_TRADING_DB)
-            for (symbol,) in option_symbols:
-                ts_code = _to_tushare_code(symbol)
+            for contract_code, strike, opt_type, expiry in contracts:
+                ts_code = _to_tushare_code(contract_code)
                 if not ts_code:
                     continue
 
@@ -164,10 +167,10 @@ def compute_option_greeks():
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             trade_date,
-                            symbol,
-                            _extract_option_type(symbol),
-                            _extract_strike(symbol),
-                            _extract_expiry(symbol),
+                            contract_code,
+                            opt_type or _extract_option_type(contract_code),
+                            strike or _extract_strike(contract_code),
+                            expiry or _extract_expiry(contract_code),
                             float(row.get('settle', 0)),
                             float(row.get('iv', 0)),
                             float(row.get('delta', 0)),
@@ -188,6 +191,7 @@ def compute_option_greeks():
         return {
             'status': 'completed',
             'date': trade_date,
+            'contracts_checked': len(contracts),
             'records_stored': total,
         }
     except Exception as e:

@@ -20,6 +20,8 @@ UNDERLYINGS = {
     "IM": {"name": "IM期货主力", "table": "option_sim_underlying_daily"},
     "512100": {"name": "中证1000ETF", "table": "option_sim_underlying_daily"},
     "A00": {"name": "A50指数", "table": "option_sim_underlying_daily"},
+    "510050": {"name": "50ETF(HO标的)", "table": "option_sim_underlying_daily"},
+    "510300": {"name": "300ETF(IO标的)", "table": "option_sim_underlying_daily"},
 }
 
 IV_UNDERLYINGS = {

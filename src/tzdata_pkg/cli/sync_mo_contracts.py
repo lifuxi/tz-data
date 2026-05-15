@@ -1,8 +1,8 @@
 """
-MO Contract Master Sync.
+Option Contract Master Sync.
 
-Creates and populates mo_contract_master table in tzdata_trading.db
-with MO (中证1000期权) contract metadata from Tushare opt_basic.
+Creates and populates option contract master tables for MO/HO/IO
+from Tushare opt_basic.
 """
 import logging
 import sqlite3
@@ -39,6 +39,13 @@ CREATE INDEX IF NOT EXISTS idx_mo_contract_expiry ON mo_contract_master(expiry_d
 CREATE INDEX IF NOT EXISTS idx_mo_contract_status ON mo_contract_master(status);
 CREATE INDEX IF NOT EXISTS idx_mo_contract_type ON mo_contract_master(option_type);
 """
+
+
+PRODUCTS = {
+    "MO": {"name": "中证1000期权", "multiplier": 100.0, "tick_size": 0.2},
+    "HO": {"name": "上证50ETF期权", "multiplier": 10000.0, "tick_size": 0.0001},
+    "IO": {"name": "沪深300ETF期权", "multiplier": 10000.0, "tick_size": 0.0001},
+}
 
 
 def _ensure_table(conn):
@@ -78,36 +85,41 @@ def _normalize_date(date_str) -> str:
     return None
 
 
-def sync_mo_contracts(force: bool = False) -> dict:
+def sync_option_contracts(product: str = 'MO', force: bool = False) -> dict:
     """
-    Sync MO contract metadata from Tushare opt_basic.
+    Sync option contract metadata from Tushare opt_basic.
 
     Args:
+        product: 'MO', 'HO', or 'IO'
         force: If True, re-sync all contracts (including existing ones).
 
     Returns:
         dict with inserted/updated/total counts.
     """
+    if product not in PRODUCTS:
+        raise ValueError(f"Unknown product: {product}. Must be one of {list(PRODUCTS.keys())}")
+
     from tzdata_pkg.config import get_tushare_config
     from tzdata_pkg.download.tushare.client import TushareClient
 
     tushare_cfg = get_tushare_config()
     client = TushareClient(token=tushare_cfg["token"])
 
-    logger.info("Fetching MO contracts from Tushare opt_basic...")
+    logger.info(f"Fetching {product} contracts from Tushare opt_basic...")
     df = client.opt_basic(exchange="CFFEX")
     if df is None or df.empty:
         logger.warning("Tushare opt_basic returned no data")
         return {"inserted": 0, "updated": 0, "total": 0}
 
-    # Filter MO contracts
+    # Filter by product
     ts_codes = df.get("ts_code", "")
     if isinstance(ts_codes, pd.Series):
-        mo_mask = ts_codes.str.startswith("MO", na=False)
-        df = df[mo_mask]
+        mask = ts_codes.str.startswith(product, na=False)
+        df = df[mask]
 
-    logger.info(f"Found {len(df)} MO contracts from Tushare")
+    logger.info(f"Found {len(df)} {product} contracts from Tushare")
 
+    cfg = PRODUCTS[product]
     conn = sqlite3.connect(str(TZDATA_TRADING_DB))
     try:
         _ensure_table(conn)
@@ -155,49 +167,73 @@ def sync_mo_contracts(force: bool = False) -> dict:
             if existing and force:
                 conn.execute("""
                     UPDATE mo_contract_master
-                    SET contract_code = ?, expiry_date = ?, strike_price = ?,
+                    SET contract_code = ?, underlying = ?, expiry_date = ?, strike_price = ?,
                         option_type = ?, list_date = ?, delist_date = ?,
-                        last_trade_date = ?, exercise_date = ?, status = 'active',
-                        updated_at = CURRENT_TIMESTAMP
+                        last_trade_date = ?, exercise_date = ?,
+                        multiplier = ?, tick_size = ?,
+                        status = 'active', updated_at = CURRENT_TIMESTAMP
                     WHERE ts_code = ?
-                """, (contract_code, expiry_date, strike, option_type,
-                      list_date, delist_date, last_trade_date, exercise_date, ts_code))
+                """, (contract_code, product, expiry_date, strike, option_type,
+                      list_date, delist_date, last_trade_date, exercise_date,
+                      cfg["multiplier"], cfg["tick_size"], ts_code))
                 updated += 1
             else:
                 conn.execute("""
                     INSERT OR IGNORE INTO mo_contract_master
                         (ts_code, contract_code, underlying, expiry_date, strike_price,
                          option_type, list_date, delist_date, last_trade_date,
-                         exercise_date, status)
-                    VALUES (?, ?, 'MO', ?, ?, ?, ?, ?, ?, ?, 'active')
-                """, (ts_code, contract_code, expiry_date, strike, option_type,
-                      list_date, delist_date, last_trade_date, exercise_date))
+                         exercise_date, multiplier, tick_size, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                """, (ts_code, contract_code, product, expiry_date, strike, option_type,
+                      list_date, delist_date, last_trade_date, exercise_date,
+                      cfg["multiplier"], cfg["tick_size"]))
                 if conn.total_changes > 0:
                     inserted += 1
 
         conn.commit()
-        logger.info(f"Synced MO contracts: {inserted} inserted, {updated} updated, {len(df)} total")
+        logger.info(f"Synced {product} contracts: {inserted} inserted, {updated} updated, {len(df)} total")
         return {"inserted": inserted, "updated": updated, "total": len(df)}
     except Exception as e:
         conn.rollback()
-        logger.error(f"Failed to sync MO contracts: {e}", exc_info=True)
+        logger.error(f"Failed to sync {product} contracts: {e}", exc_info=True)
         raise
     finally:
         conn.close()
 
 
-def get_mo_contracts(active_only: bool = True) -> list[dict]:
-    """Get MO contracts from master table."""
+def sync_mo_contracts(force: bool = False) -> dict:
+    """Backward-compatible wrapper. Syncs MO/HO/IO contracts."""
+    results = {}
+    for product in PRODUCTS:
+        results[product] = sync_option_contracts(product=product, force=force)
+    total_inserted = sum(r.get('inserted', 0) for r in results.values())
+    total_updated = sum(r.get('updated', 0) for r in results.values())
+    total_all = sum(r.get('total', 0) for r in results.values())
+    return {"inserted": total_inserted, "updated": total_updated, "total": total_all, "details": results}
+
+
+def get_mo_contracts(active_only: bool = True, product: str = None) -> list[dict]:
+    """Get option contracts from master table.
+
+    Args:
+        active_only: Filter active contracts only
+        product: 'MO', 'HO', 'IO', or None for all
+    """
     conn = sqlite3.connect(str(TZDATA_TRADING_DB))
     try:
         _ensure_table(conn)
-        where = "WHERE status = 'active'" if active_only else ""
+        conditions = ["status = 'active'"] if active_only else []
+        params = []
+        if product:
+            conditions.append("underlying = ?")
+            params.append(product)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
         rows = conn.execute(f"""
             SELECT ts_code, contract_code, underlying, expiry_date, strike_price,
                    option_type, list_date, delist_date, status
             FROM mo_contract_master {where}
-            ORDER BY expiry_date, strike_price, option_type
-        """).fetchall()
+            ORDER BY underlying, expiry_date, strike_price, option_type
+        """, params).fetchall()
         return [
             {
                 "ts_code": r[0],
