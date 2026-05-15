@@ -1496,6 +1496,30 @@ def get_system_config(config_key: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/schedule")
+def list_schedule():
+    """List all Celery Beat scheduled tasks."""
+    from tzdata_pkg.scheduler.celery_app import celery_app
+
+    schedule = celery_app.conf.get('beat_schedule', {})
+    tasks = []
+    for name, entry in sorted(schedule.items()):
+        schedule_obj = entry.get('schedule')
+        # Extract human-readable schedule string
+        schedule_str = str(schedule_obj) if schedule_obj else ''
+        tasks.append({
+            'name': name,
+            'task': entry.get('task', ''),
+            'schedule': schedule_str,
+        })
+
+    return {
+        'success': True,
+        'total': len(tasks),
+        'tasks': tasks,
+    }
+
+
 @router.put("/system-config")
 def upsert_system_config(request: SystemConfigRequest):
     """Create or update a system config entry."""
