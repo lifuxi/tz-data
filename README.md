@@ -22,7 +22,7 @@ tz-data is a Python package that downloads, parses, stores, and serves market da
 | Tushare daily/minute/option | Implemented |
 | CFMMC bill auto-download (Selenium) | Implemented |
 | Bill HTML parser | Implemented |
-| 12�? DB migration | Implemented |
+| 12→ DB migration | Implemented |
 | Python SDK (`TzDataClient`) | Implemented |
 | CLI (`tzdata` command) | Implemented |
 | Download scheduler (APScheduler) | Implemented |
@@ -63,14 +63,14 @@ tz-data consolidates data from 12 legacy SQLite databases into 3 unified databas
 ### Data Flow
 
 ```
-Exchanges (CFFEX/SHFE) ──�?Downloaders ──�?Dual-write ──�?tzdata_market.db (unified)
-                                              �?                                              └──�?cffex.db / shfe.db (legacy, transition)
+Exchanges (CFFEX/SHFE) ??▸Downloaders ??▸Dual-write ??▸tzdata_market.db (unified)
+                                              ??                                              └??▸cffex.db / shfe.db (legacy, transition)
 
-CFMMC (bills) ──�?Selenium download ──�?HTML parser ──�?tzdata_trading.db
+CFMMC (bills) ??▸Selenium download ??▸HTML parser ??▸tzdata_trading.db
 
-Tushare API ──�?TushareDownloader ──�?tzdata_market.db / tzdata_analysis.db
+Tushare API ??▸TushareDownloader ??▸tzdata_market.db / tzdata_analysis.db
 
-Legacy 12 DBs ──�?Migration script ──�?3 unified DBs
+Legacy 12 DBs ??▸Migration script ??▸3 unified DBs
 ```
 
 ## CLI Commands
@@ -89,7 +89,7 @@ tzdata query positions --contract MO2505 --date 2025-05-01
 tzdata query bills --account-id ACC001
 tzdata query pnl --account-id ACC001 --from 2025-01-01 --to 2025-05-01
 
-# Migration (12 legacy DBs �?3 unified DBs)
+# Migration (12 legacy DBs →3 unified DBs)
 tzdata migrate --dry-run    # Preview what would be migrated
 tzdata migrate              # Execute migration
 tzdata migrate --verify     # Verify row counts match
@@ -179,14 +179,14 @@ API endpoints (all under `/api/v1`):
 
 ## Migration Guide
 
-### 12 �?3 Database Migration
+### 12 →3 Database Migration
 
 The migration script consolidates data from 12 legacy SQLite databases into 3 unified databases:
 
 **Source databases:**
-- `cffex.db`, `cffex_minute_data.db`, `shfe.db` �?`tzdata_market.db`
-- `bills.db`, `option_sim.db` �?`tzdata_trading.db`
-- `institution.db`, `tushare.db`, `trading.db` �?`tzdata_analysis.db`
+- `cffex.db`, `cffex_minute_data.db`, `shfe.db` →`tzdata_market.db`
+- `bills.db`, `option_sim.db` →`tzdata_trading.db`
+- `institution.db`, `tushare.db`, `trading.db` →`tzdata_analysis.db`
 
 **Column mapping:** The migration automatically maps column names between old and new schemas:
 
@@ -227,9 +227,9 @@ tzdata status
 All paths derive from `TZ_DATA_DIR` environment variable (default: `C:\myspace\tz-data\data`).
 
 Key environment variables:
-- `TZ_DATA_DIR` �?Data directory for databases and logs
-- `TUSHARE_TOKEN` �?Tushare API token
-- `CFMMC_COOKIES_DIR` �?CFMMC cookie directory for bill downloads
+- `TZ_DATA_DIR` ??Data directory for databases and logs
+- `TUSHARE_TOKEN` ??Tushare API token
+- `CFMMC_COOKIES_DIR` ??CFMMC cookie directory for bill downloads
 
 See `src/tzdata_pkg/config.py` for exchange-specific settings.
 
@@ -240,41 +240,41 @@ tz-data/
 ├── pyproject.toml                  # Package definition + dependencies
 ├── README.md                       # This file
 ├── docs/
-�?  └── DATABASE_SCHEMA.md          # Database schema documentation
+??  └── DATABASE_SCHEMA.md          # Database schema documentation
 ├── src/tzdata_pkg/
-�?  ├── __main__.py                 # CLI entry point (Click)
-�?  ├── config.py                   # Configuration
-�?  ├── core/                       # Core infrastructure
-�?  �?  ├── db.py                   # DB connection pool
-�?  �?  ├── exceptions.py           # Custom exceptions
-�?  �?  ├── constants.py            # Exchange codes, product definitions
-�?  �?  └── validators.py           # Data validators
-�?  ├── storage/                    # Unified storage layer
-�?  �?  ├── schemas/                # SQL schema files
-�?  �?  ├── db_registry.py          # DB path + connection management
-�?  �?  ├── market_store.py         # Market data CRUD
-�?  �?  ├── trading_store.py        # Trading data CRUD
-�?  �?  └── analysis_store.py       # Analysis data CRUD
-�?  ├── download/                   # Exchange downloaders
-�?  �?  ├── cffex/                  # CFFEX (unified downloader)
-�?  �?  ├── shfe/                   # SHFE (AkShare)
-�?  �?  ├── tushare/                # Tushare API
-�?  �?  └── cfmmc/                  # CFMMC bill download
-�?  ├── parser/                     # Bill parser (migrated from tz2.0)
-�?  �?  ├── bill_parser.py          # HTML bill parser
-�?  �?  └── models.py               # Bill data models
-�?  ├── query/                      # Python SDK
-�?  �?  ├── client.py               # TzDataClient main interface
-�?  �?  ├── market.py               # Market data queries
-�?  �?  ├── trading.py              # Trading data queries
-�?  �?  └── analysis.py             # Analysis data queries
-�?  ├── scheduler/                  # Download scheduler
-�?  �?  └── scheduler.py            # APScheduler-based job scheduler
-�?  ├── api/                        # FastAPI service
-�?  �?  ├── server.py               # FastAPI app
-�?  �?  └── routes/                 # API route handlers
-�?  └── migration/                  # Migration tools
-�?      └── migrate_12_to_3.py      # 12�? DB migration script
+??  ├── __main__.py                 # CLI entry point (Click)
+??  ├── config.py                   # Configuration
+??  ├── core/                       # Core infrastructure
+??  ??  ├── db.py                   # DB connection pool
+??  ??  ├── exceptions.py           # Custom exceptions
+??  ??  ├── constants.py            # Exchange codes, product definitions
+??  ??  └── validators.py           # Data validators
+??  ├── storage/                    # Unified storage layer
+??  ??  ├── schemas/                # SQL schema files
+??  ??  ├── db_registry.py          # DB path + connection management
+??  ??  ├── market_store.py         # Market data CRUD
+??  ??  ├── trading_store.py        # Trading data CRUD
+??  ??  └── analysis_store.py       # Analysis data CRUD
+??  ├── download/                   # Exchange downloaders
+??  ??  ├── cffex/                  # CFFEX (unified downloader)
+??  ??  ├── shfe/                   # SHFE (AkShare)
+??  ??  ├── tushare/                # Tushare API
+??  ??  └── cfmmc/                  # CFMMC bill download
+??  ├── parser/                     # Bill parser (migrated from tz2.0)
+??  ??  ├── bill_parser.py          # HTML bill parser
+??  ??  └── models.py               # Bill data models
+??  ├── query/                      # Python SDK
+??  ??  ├── client.py               # TzDataClient main interface
+??  ??  ├── market.py               # Market data queries
+??  ??  ├── trading.py              # Trading data queries
+??  ??  └── analysis.py             # Analysis data queries
+??  ├── scheduler/                  # Download scheduler
+??  ??  └── scheduler.py            # APScheduler-based job scheduler
+??  ├── api/                        # FastAPI service
+??  ??  ├── server.py               # FastAPI app
+??  ??  └── routes/                 # API route handlers
+??  └── migration/                  # Migration tools
+??      └── migrate_12_to_3.py      # 12→ DB migration script
 └── tests/                          # Test suite
 ```
 

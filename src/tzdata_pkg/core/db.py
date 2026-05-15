@@ -28,6 +28,7 @@ class SQLitePool:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
         conn.row_factory = sqlite3.Row
+        conn.text_factory = lambda x: x.decode("utf-8")
 
     def get_connection(self) -> sqlite3.Connection:
         """Get a connection (thread-local, reuses existing)."""

@@ -115,6 +115,30 @@ class TushareClient:
             self.logger.warning(f"Tushare opt_daily failed for {ts_code}: {e}")
             return None
 
+    def opt_mins(self, ts_code: str, start_date: str = None,
+                 end_date: str = None, freq: str = "1min") -> Optional[Any]:
+        """Fetch option minute bar data via Tushare opt_mins API.
+
+        Args:
+            ts_code: Tushare option code (e.g. "MO2505-C-8500.CFFEX")
+            start_date: YYYYMMDD
+            end_date: YYYYMMDD
+            freq: 1min, 5min, 15min, 30min, 60min
+        """
+        self._wait()
+        try:
+            df = self.pro.query(
+                "opt_mins",
+                ts_code=ts_code,
+                freq=freq,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            return df
+        except Exception as e:
+            self.logger.warning(f"Tushare opt_mins failed for {ts_code}: {e}")
+            return None
+
     def opt_basic(self, exchange: str = "CFFEX") -> Optional[Any]:
         """Fetch option contract list.
 

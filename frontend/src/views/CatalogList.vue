@@ -16,7 +16,11 @@
         <el-table-column prop="catalog_name" label="目录名称" />
         <el-table-column prop="exchange_code" label="交易所" width="100" />
         <el-table-column prop="product_code" label="品种" width="100" />
-        <el-table-column prop="data_type" label="数据类型" width="120" />
+        <el-table-column prop="data_type" label="数据类型" width="120">
+          <template #default="{ row }">
+            {{ getDataTypeLabel(row.data_type) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="sync_mode" label="同步模式" width="120" />
         <el-table-column label="启用" width="80">
           <template #default="{ row }">
@@ -72,21 +76,19 @@
 
         <el-form-item label="数据类型" prop="data_type">
           <el-select v-model="form.data_type" placeholder="选择数据类型" style="width: 100%">
-            <el-option label="daily" value="daily" />
-            <el-option label="minute" value="minute" />
-            <el-option label="position" value="position" />
-            <el-option label="option" value="option" />
-            <el-option label="settlement" value="settlement" />
+            <el-option label="日线行情" value="daily" />
+            <el-option label="分钟行情" value="minute" />
+            <el-option label="Top20持仓" value="top20_holdings" />
           </el-select>
         </el-form-item>
 
         <el-form-item label="数据源" prop="data_source">
           <el-select v-model="form.data_source" placeholder="选择数据源" style="width: 100%">
-            <el-option label="Tushare" value="tushare" />
-            <el-option label="CFFEX" value="cffex" />
-            <el-option label="SHFE" value="shfe" />
-            <el-option label="CFMMC" value="cfmmc" />
+            <el-option label="Tushare Pro" value="tushare" />
             <el-option label="AkShare" value="akshare" />
+            <el-option label="中金所官网" value="cffex_official" />
+            <el-option label="上期所官网" value="shfe_official" />
+            <el-option label="监控中心" value="cfmmc" />
           </el-select>
         </el-form-item>
 
@@ -247,6 +249,11 @@ const resetForm = () => {
     sync_mode: 'incremental',
     is_enabled: true
   }
+}
+
+const getDataTypeLabel = (type) => {
+  const map = { daily: '日线行情', minute: '分钟行情', top20_holdings: 'Top20持仓' }
+  return map[type] || type
 }
 
 onMounted(() => {

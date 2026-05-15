@@ -184,3 +184,30 @@ def _get_trading_dates(start_date, end_date):
             trading_dates.append(current)
         current += timedelta(days=1)
     return trading_dates
+
+
+@celery_app.task
+def trade_matching_task():
+    """
+    Run FIFO trade matching on raw trades.
+
+    Reads from trades table, pairs open/close by instrument,
+    writes to matched_trades and trade_performance.
+    Scheduled daily at 20:30.
+    """
+    try:
+        from tzdata_pkg.maintenance.statements.trade_matcher import TradeMatcher
+
+        matcher = TradeMatcher()
+        result = matcher.run()
+        logger.info(f"Trade matching: {result}")
+        return {
+            'status': 'completed',
+            **result,
+        }
+    except Exception as e:
+        logger.error(f"Trade matching failed: {e}", exc_info=True)
+        return {
+            'status': 'failed',
+            'error': str(e),
+        }

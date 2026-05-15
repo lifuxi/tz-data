@@ -217,3 +217,51 @@ def sync_mo_contracts():
             'status': 'failed',
             'error': str(e),
         }
+
+
+@celery_app.task
+def sync_mo_minute():
+    """
+    Sync MO option minute bars from Tushare opt_mins.
+    Scheduled at 15:30 on trading days. Incremental sync only.
+    """
+    audit = get_audit_logger()
+    task_id = sync_mo_minute.request.id if sync_mo_minute.request.id else "sync_mo_minute"
+
+    if not _is_trading_day():
+        logger.info(f"Skipping minute sync: {date.today()} is not a CFFEX trading day")
+        return {'status': 'skipped', 'reason': 'non-trading day'}
+
+    audit.log_start(task_id, 'mo-minute-sync', sync_mode='incremental',
+                    exchange='CFFEX', product='MO', data_type='minute')
+
+    try:
+        from tzdata_pkg.download.tushare.mo_minute_downloader import MOMinuteDownloader
+
+        downloader = MOMinuteDownloader(freq="1min")
+        try:
+            result = downloader.download_incremental()
+            total = sum(result.values())
+            audit.log_success(task_id, records_fetched=total)
+            logger.info(f"MO minute sync completed: {total} bars, contracts={list(result.keys())}")
+            return {
+                'status': 'completed',
+                'total_records': total,
+                'contracts': list(result.keys()),
+                'details': {k: v for k, v in result.items() if v > 0},
+            }
+        finally:
+            downloader.close()
+    except Exception as e:
+        audit.log_failure(task_id, e)
+        from tzdata_pkg.scheduler.tasks.alert_tasks import send_sync_alert
+        send_sync_alert(
+            task_name='mo-minute-sync', status='error',
+            message=f"分钟数据同步失败: {e}",
+            details={'error': str(e)},
+        )
+        logger.error(f"MO minute sync failed: {e}", exc_info=True)
+        return {
+            'status': 'failed',
+            'error': str(e),
+        }

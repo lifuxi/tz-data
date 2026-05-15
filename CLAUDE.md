@@ -11,6 +11,7 @@
 | 后端 API | 8000 | `uvicorn tzdata_pkg.api.server:app --port 8000` |
 | 前端 | 3000 | `npm run dev` (在 frontend 目录) |
 | Celery Worker | 系统分配 | `celery -A tzdata_pkg.scheduler.celery_app worker --pool=gevent` |
+| Celery Flower | 5555 | `celery -A tzdata_pkg.scheduler.celery_app flower --port=5555` |
 | Redis | 6379 | 外部服务（Memurai 或 WSL Redis） |
 | QuestDB | 9000/8812 | 外部服务（可选） |
 
@@ -49,6 +50,20 @@ Windows 上 Celery worker 必须使用 `--pool=gevent` 参数，不支持默认 
 celery -A tzdata_pkg.scheduler.celery_app worker --loglevel=info --pool=gevent
 ```
 
+### 数据目录同步
+
+数据目录配置在 `/catalogs` 页面管理，同步通过以下方式触发：
+
+**自动同步**：Celery Beat 每日 18:00 执行 `daily_incremental_sync`，自动同步所有启用的目录。
+
+**手动同步**（CLI）：
+```
+python -m tzdata_pkg.cli.sync_catalogs list                                    # 列出目录
+python -m tzdata_pkg.cli.sync_catalogs sync --id 1 --mode incremental          # 增量同步
+python -m tzdata_pkg.cli.sync_catalogs sync --id 1 --mode full --start 2025-01-01 --end 2026-05-15  # 全量同步
+python -m tzdata_pkg.cli.sync_catalogs sync-all --mode incremental             # 同步所有启用目录
+```
+
 ### Docker 文件说明
 
 - `start.bat.docker.backup` 是旧的 Docker 版本备份，包含已废弃的 Docker 命令，可安全删除
@@ -56,7 +71,7 @@ celery -A tzdata_pkg.scheduler.celery_app worker --loglevel=info --pool=gevent
 
 ### bat 脚本编码
 
-所有 `.bat` 脚本使用 **UTF-8 with BOM** 编码，首行包含 `chcp 65001 >NUL`。编辑后务必保持此编码格式，否则中文会乱码。
+所有 `.bat` 脚本使用 **UTF-8 with BOM** 编码，首行包含 `chcp 65001 >NUL`（切换控制台代码页为 UTF-8）。Windows 重定向使用 `>NUL 2>&1`，禁止使用 `/dev/null`。编辑后务必保持此编码格式，否则 PowerShell 下中文会乱码。
 
 ### 与 tz2.0 的关系
 

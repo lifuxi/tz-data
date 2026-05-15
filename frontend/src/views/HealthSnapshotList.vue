@@ -16,7 +16,7 @@
           </div>
         </div>
       </template>
-      
+
       <!-- 最新快照概览 -->
       <el-alert
         v-if="latestSnapshot"
@@ -27,43 +27,50 @@
       >
         <template #default>
           <el-descriptions :column="4" size="small">
-            <el-descriptions-item label="生成时间">{{ formatTime(latestSnapshot.generated_at) }}</el-descriptions-item>
+            <el-descriptions-item label="生成时间">{{ latestSnapshot.summary?.generated_at || '-' }}</el-descriptions-item>
             <el-descriptions-item label="目录总数">{{ latestSnapshot.summary?.total_catalogs || 0 }}</el-descriptions-item>
             <el-descriptions-item label="今日同步">{{ latestSnapshot.summary?.synced_today || 0 }}</el-descriptions-item>
-            <el-descriptions-item label="平均质量分">{{ latestSnapshot.summary?.avg_quality_score || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="平均质量分">
+              <el-tag :type="getQualityType(latestSnapshot.summary?.avg_quality_score)">
+                {{ latestSnapshot.summary?.avg_quality_score || 0 }}
+              </el-tag>
+            </el-descriptions-item>
           </el-descriptions>
         </template>
       </el-alert>
-      
+
       <!-- 快照列表 -->
       <el-table :data="snapshots" stripe v-loading="loading">
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="generated_at" label="生成时间" width="180">
+        <el-table-column prop="catalog_name" label="目录名称" />
+        <el-table-column prop="snapshot_date" label="快照日期" width="120" />
+        <el-table-column prop="quality_score" label="质量分" width="100">
           <template #default="{ row }">
-            {{ formatTime(row.generated_at) }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="total_catalogs" label="目录总数" width="120" />
-        <el-table-column prop="synced_today" label="今日同步" width="120" />
-        <el-table-column prop="avg_quality_score" label="平均质量分" width="120">
-          <template #default="{ row }">
-            <el-tag :type="getQualityType(row.avg_quality_score)">
-              {{ row.avg_quality_score }}
+            <el-tag :type="getQualityType(row.quality_score)">
+              {{ row.quality_score }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="catalogs_with_issues" label="异常目录" width="120">
+        <el-table-column prop="completeness_pct" label="完整度" width="100">
           <template #default="{ row }">
-            <el-badge :value="row.catalogs_with_issues || 0" :max="99" type="danger" />
+            {{ row.completeness_pct }}%
+          </template>
+        </el-table-column>
+        <el-table-column prop="missing_days" label="缺失天数" width="100" />
+        <el-table-column prop="last_sync_status" label="同步状态" width="120">
+          <template #default="{ row }">
+            <el-tag :type="getSyncStatusType(row.last_sync_status)" size="small">
+              {{ getSyncStatusLabel(row.last_sync_status) }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="150">
           <template #default="{ row }">
-            <el-button size="small" type="primary" @click="viewDetail(row)">查看详情</el-button>
+            <el-button size="small" type="primary" @click="viewDetail(row)">详情</el-button>
           </template>
         </el-table-column>
       </el-table>
-      
+
       <!-- 分页 -->
       <el-pagination
         v-model:current-page="currentPage"
@@ -76,43 +83,32 @@
         style="margin-top: 20px; justify-content: flex-end;"
       />
     </el-card>
-    
+
     <!-- 快照详情对话框 -->
-    <el-dialog v-model="detailVisible" title="快照详情" width="800px">
-      <el-tabs v-if="currentSnapshot">
-        <el-tab-pane label="概览">
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="快照ID">{{ currentSnapshot.id }}</el-descriptions-item>
-            <el-descriptions-item label="生成时间">{{ formatTime(currentSnapshot.generated_at) }}</el-descriptions-item>
-            <el-descriptions-item label="目录总数">{{ currentSnapshot.summary?.total_catalogs }}</el-descriptions-item>
-            <el-descriptions-item label="启用目录">{{ currentSnapshot.summary?.enabled_catalogs }}</el-descriptions-item>
-            <el-descriptions-item label="今日同步">{{ currentSnapshot.summary?.synced_today }}</el-descriptions-item>
-            <el-descriptions-item label="平均质量分">{{ currentSnapshot.summary?.avg_quality_score }}</el-descriptions-item>
-          </el-descriptions>
-        </el-tab-pane>
-        
-        <el-tab-pane label="按交易所">
-          <el-table :data="Object.values(currentSnapshot.by_exchange || {})" stripe>
-            <el-table-column prop="exchange_code" label="交易所" />
-            <el-table-column prop="catalog_count" label="目录数" />
-            <el-table-column prop="avg_quality" label="平均质量分">
-              <template #default="{ row }">
-                <el-tag :type="getQualityType(row.avg_quality)">{{ row.avg_quality }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="synced_count" label="今日同步" />
-          </el-table>
-        </el-tab-pane>
-        
-        <el-tab-pane label="异常目录">
-          <el-empty v-if="!currentSnapshot.catalogs_with_issues || currentSnapshot.catalogs_with_issues.length === 0" description="暂无异常目录" />
-          <el-table v-else :data="currentSnapshot.catalogs_with_issues" stripe>
-            <el-table-column prop="catalog_name" label="目录名称" />
-            <el-table-column prop="quality_score" label="质量分" />
-            <el-table-column prop="issues" label="问题描述" />
-          </el-table>
-        </el-tab-pane>
-      </el-tabs>
+    <el-dialog v-model="detailVisible" title="快照详情" width="700px">
+      <el-descriptions :column="2" border v-if="currentSnapshot">
+        <el-descriptions-item label="快照ID">{{ currentSnapshot.id }}</el-descriptions-item>
+        <el-descriptions-item label="目录名称">{{ currentSnapshot.catalog_name }}</el-descriptions-item>
+        <el-descriptions-item label="快照日期">{{ currentSnapshot.snapshot_date }}</el-descriptions-item>
+        <el-descriptions-item label="质量分">
+          <el-tag :type="getQualityType(currentSnapshot.quality_score)">
+            {{ currentSnapshot.quality_score }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="完整度">{{ currentSnapshot.completeness_pct }}%</el-descriptions-item>
+        <el-descriptions-item label="缺失天数">{{ currentSnapshot.missing_days }}</el-descriptions-item>
+        <el-descriptions-item label="一致性">
+          {{ getConsistencyLabel(currentSnapshot.consistency_status) }}
+        </el-descriptions-item>
+        <el-descriptions-item label="同步状态">
+          <el-tag :type="getSyncStatusType(currentSnapshot.last_sync_status)" size="small">
+            {{ getSyncStatusLabel(currentSnapshot.last_sync_status) }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="创建时间" :span="2">
+          {{ formatTime(currentSnapshot.created_at) }}
+        </el-descriptions-item>
+      </el-descriptions>
     </el-dialog>
   </div>
 </template>
@@ -153,7 +149,18 @@ const loadSnapshots = async () => {
 const loadLatestSnapshot = async () => {
   try {
     const res = await healthAPI.getLatest()
-    latestSnapshot.value = res.data
+    const summary = res.data
+    latestSnapshot.value = {
+      summary: {
+        generated_at: summary?.generated_at ? new Date(summary.generated_at).toLocaleString('zh-CN') : '-',
+        total_catalogs: summary?.summary?.total_catalogs || 0,
+        synced_today: summary?.summary?.synced_today || 0,
+        avg_quality_score: summary?.summary?.avg_quality_score || 0,
+        catalogs_with_issues: summary?.summary?.catalogs_with_issues || 0
+      },
+      by_exchange: summary?.by_exchange || {},
+      catalogs_with_issues: summary?.catalogs_with_issues || []
+    }
   } catch (error) {
     console.error('Failed to load latest snapshot:', error)
   }
@@ -177,12 +184,30 @@ const viewDetail = (snapshot) => {
   detailVisible.value = true
 }
 
-// Get quality tag type
+// Quality tag type
 const getQualityType = (score) => {
   if (score >= 90) return 'success'
   if (score >= 70) return ''
   if (score >= 50) return 'warning'
   return 'danger'
+}
+
+// Sync status label
+const getSyncStatusLabel = (status) => {
+  const map = { completed: '已完成', running: '同步中', failed: '失败', never_synced: '未同步', unknown: '未知' }
+  return map[status] || status
+}
+
+// Sync status tag type
+const getSyncStatusType = (status) => {
+  const map = { completed: 'success', running: 'warning', failed: 'danger', never_synced: 'info', unknown: 'info' }
+  return map[status] || 'info'
+}
+
+// Consistency label
+const getConsistencyLabel = (status) => {
+  const map = { consistent: '一致', minor_issues: '轻微异常', inconsistent: '不一致' }
+  return map[status] || status
 }
 
 // Format time

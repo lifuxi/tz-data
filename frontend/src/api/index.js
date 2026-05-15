@@ -65,23 +65,6 @@ export const catalogAPI = {
   },
 }
 
-export const syncAPI = {
-  // Trigger sync task
-  trigger(catalogId, mode = 'incremental') {
-    return apiClient.post('/sync/trigger', { catalog_id: catalogId, mode })
-  },
-  
-  // Get sync task status
-  getStatus(taskId) {
-    return apiClient.get(`/sync/task/${taskId}`)
-  },
-  
-  // List sync tasks
-  list(params = {}) {
-    return apiClient.get('/sync/tasks', { params })
-  },
-}
-
 export const healthAPI = {
   // Generate health snapshot
   generate() {

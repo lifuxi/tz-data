@@ -109,30 +109,39 @@ class HealthSnapshotGenerator:
     def _get_last_sync_status(catalog_id: int) -> tuple[str, Optional[str]]:
         """
         Get the status of the last sync task for a catalog.
-        
-        Returns:
-            Tuple of (status, error_message)
+        Returns: Tuple of (status, error_message)
         """
         registry = DBRegistry()
         pool = registry.get_pool('market')
-        
+
         try:
             with pool.transaction() as conn:
                 cursor = conn.execute("""
-                    SELECT status, error_message
+                    SELECT status, checkpoint_data
                     FROM sync_task
                     WHERE catalog_id = ?
                     ORDER BY created_at DESC
                     LIMIT 1
                 """, (catalog_id,))
-                
+
                 row = cursor.fetchone()
-                
+
                 if row:
-                    return (row[0], row[1])
+                    status = row[0]
+                    checkpoint = row[1] or ''
+                    # Extract error from checkpoint_data if present
+                    error = None
+                    if '"error"' in checkpoint.lower():
+                        import json
+                        try:
+                            data = json.loads(checkpoint)
+                            error = data.get('error')
+                        except json.JSONDecodeError:
+                            pass
+                    return (status, error)
                 else:
                     return ('never_synced', None)
-                    
+
         except Exception as e:
             logger.error(f"Failed to get last sync status: {e}")
             return ('unknown', str(e))

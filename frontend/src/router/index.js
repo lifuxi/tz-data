@@ -21,12 +21,6 @@ const routes = [
         meta: { title: '数据目录', icon: 'List', group: '数据维护', order: 20 }
       },
       {
-        path: '/sync-tasks',
-        name: 'SyncTasks',
-        component: () => import('@/views/SyncTaskList.vue'),
-        meta: { title: '同步任务', icon: 'Refresh', group: '数据维护', order: 30 }
-      },
-      {
         path: '/health-snapshots',
         name: 'HealthSnapshots',
         component: () => import('@/views/HealthSnapshotList.vue'),

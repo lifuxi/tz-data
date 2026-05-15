@@ -13,11 +13,6 @@ router = APIRouter(prefix="/api/maintenance", tags=["maintenance"])
 
 # === Request/Response Models ===
 
-class SyncTriggerRequest(BaseModel):
-    catalog_id: int
-    mode: str = "incremental"  # incremental or full
-
-
 class AccountCreateRequest(BaseModel):
     account_name: str
     account_number: str
@@ -116,83 +111,6 @@ def update_catalog(catalog_id: int, request: dict):
             )
 
         return {"success": True, "catalog_id": catalog_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# === Sync Endpoints ===
-
-@router.post("/sync/trigger")
-def trigger_sync(request: SyncTriggerRequest, background_tasks: BackgroundTasks):
-    """Trigger a sync task (asynchronous)."""
-    from tzdata_pkg.scheduler.tasks.sync_tasks import sync_catalog_task
-    
-    try:
-        # Execute asynchronously via Celery
-        task = sync_catalog_task.delay(
-            catalog_id=request.catalog_id,
-            mode=request.mode
-        )
-        
-        return {
-            "success": True,
-            "task_id": task.id,
-            "status": "queued"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/sync/tasks")
-def list_sync_tasks(
-    page: int = 1,
-    page_size: int = 20,
-    status: Optional[str] = None
-):
-    """List sync tasks with pagination."""
-    try:
-        from celery.result import AsyncResult
-        from tzdata_pkg.maintenance.metadata.catalog_manager import CatalogManager
-
-        # Get all catalogs to map task_ids
-        catalogs = CatalogManager.list_catalogs()
-        catalog_map = {c['id']: c.get('name', f"Catalog #{c['id']}") for c in catalogs}
-
-        # Collect tasks from Celery Flower or recent task IDs
-        # Since Celery doesn't store task history by default, we return a placeholder
-        # In production, use celery-events or flower for task history
-        tasks = []
-
-        # If there are any known task IDs from recent sync triggers, show them
-        # For now, return empty list with pagination info
-        total = len(tasks)
-        start = (page - 1) * page_size
-        end = start + page_size
-        paginated = tasks[start:end]
-
-        return {
-            "success": True,
-            "data": paginated,
-            "total": total,
-            "page": page,
-            "page_size": page_size
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/sync/task/{task_id}")
-def get_task_status(task_id: str):
-    """Get status of a sync task."""
-    try:
-        from celery.result import AsyncResult
-        result = AsyncResult(task_id)
-        
-        return {
-            "task_id": task_id,
-            "status": result.status,
-            "result": result.result if result.ready() else None
-        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -296,16 +214,14 @@ def list_health_snapshots(
                 data.append({
                     "id": row[0],
                     "catalog_id": row[1],
-                    "catalog_name": row[2],
-                    "generated_at": row[9],
+                    "catalog_name": row[2] or f"#{row[1]}",
                     "snapshot_date": row[3],
-                    "total_catalogs": 1,
-                    "missing_days": row[4],
-                    "avg_quality_score": round(row[5], 1) if row[5] else 0.0,
+                    "missing_days": row[4] or 0,
+                    "quality_score": round(row[5], 1) if row[5] else 0.0,
                     "completeness_pct": round(row[6], 1) if row[6] else 0.0,
                     "consistency_status": row[7],
                     "last_sync_status": row[8],
-                    "catalogs_with_issues": row[4] if row[4] and row[4] > 0 else 0
+                    "created_at": row[9]
                 })
 
         return {
@@ -336,6 +252,7 @@ def get_latest_health_snapshot():
         total_quality = 0.0
         total_with_issues = 0
         catalog_issues = []
+        exchange_stats = {}  # exchange_code -> {catalog_count, avg_quality, synced_count}
 
         with pool.transaction() as conn:
             for catalog in catalogs:
@@ -349,31 +266,57 @@ def get_latest_health_snapshot():
                 """, (catalog['id'],))
                 row = cursor.fetchone()
 
+                exchange = catalog.get('exchange_code', 'UNKNOWN')
+                if exchange not in exchange_stats:
+                    exchange_stats[exchange] = {'exchange_code': exchange, 'catalog_count': 0, 'quality_sum': 0.0, 'synced_count': 0}
+
+                exchange_stats[exchange]['catalog_count'] += 1
+
                 if row:
                     quality = row[1] or 0.0
                     missing = row[0] or 0
                     total_quality += quality
+                    exchange_stats[exchange]['quality_sum'] += quality
                     if row[3] == 'completed':
                         total_synced += 1
+                        exchange_stats[exchange]['synced_count'] += 1
                     if missing > 0:
                         total_with_issues += 1
                         catalog_issues.append({
                             "catalog_id": catalog['id'],
                             "catalog_name": catalog.get('catalog_name', f"#{catalog['id']}"),
                             "quality_score": round(quality, 1),
-                            "issues": f"Missing {missing} days"
+                            "completeness_pct": round(row[2], 1) if row[2] else 0.0,
+                            "issues": f"缺失 {missing} 天"
                         })
+                else:
+                    exchange_stats[exchange]['quality_sum'] += 0
 
         avg_quality = round(total_quality / total_catalogs, 1) if total_catalogs > 0 else 0.0
+
+        # Compute by_exchange averages
+        by_exchange = {}
+        for code, stats in exchange_stats.items():
+            count = stats['catalog_count']
+            by_exchange[code] = {
+                'exchange_code': code,
+                'catalog_count': count,
+                'avg_quality': round(stats['quality_sum'] / count, 1) if count > 0 else 0.0,
+                'synced_count': stats['synced_count']
+            }
+
+        enabled_count = sum(1 for c in catalogs if c.get('is_enabled', True))
 
         snapshot = {
             "generated_at": datetime.now().isoformat(),
             "summary": {
                 "total_catalogs": total_catalogs,
+                "enabled_catalogs": enabled_count,
                 "synced_today": total_synced,
                 "avg_quality_score": avg_quality,
                 "catalogs_with_issues": total_with_issues
             },
+            "by_exchange": by_exchange,
             "catalogs_with_issues": catalog_issues
         }
 

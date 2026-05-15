@@ -46,6 +46,12 @@ celery_app.conf.update(
         # ============================================================
         # MO 系统数据同步（交易日）
         # ============================================================
+        # 交易日 15:30 MO 期权分钟数据同步
+        'mo-minute-sync': {
+            'task': 'tzdata_pkg.scheduler.tasks.mo_tasks.sync_mo_minute',
+            'schedule': crontab(hour=15, minute=30, day_of_week='mon-fri'),
+        },
+
         # 交易日 16:00 同步 MO IV 数据
         'mo-iv-sync': {
             'task': 'tzdata_pkg.scheduler.tasks.mo_tasks.sync_mo_iv',
@@ -119,6 +125,12 @@ celery_app.conf.update(
         'daily-bill-missing-check': {
             'task': 'tzdata_pkg.scheduler.tasks.statement_tasks.check_missing_bills_task',
             'schedule': crontab(hour=20, minute=0),
+        },
+
+        # 每日 20:30 交易开平匹配
+        'daily-trade-matching': {
+            'task': 'tzdata_pkg.scheduler.tasks.statement_tasks.trade_matching_task',
+            'schedule': crontab(hour=20, minute=30),
         },
 
         # 交易日 21:00 账单日历驱动检查（新增）
