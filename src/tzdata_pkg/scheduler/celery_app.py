@@ -97,6 +97,12 @@ celery_app.conf.update(
             'schedule': crontab(hour=20, minute=0),
         },
 
+        # 交易日 21:00 账单日历驱动检查（新增）
+        'daily-bill-calendar-check': {
+            'task': 'tzdata_pkg.scheduler.tasks.bill_tasks.daily_bill_calendar_check',
+            'schedule': crontab(hour=21, minute=0, day_of_week='mon-fri'),
+        },
+
         # ============================================================
         # tz-data 数据层任务（Phase 5）
         # ============================================================

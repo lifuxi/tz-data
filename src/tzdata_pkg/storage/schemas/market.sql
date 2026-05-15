@@ -468,3 +468,28 @@ CREATE TABLE IF NOT EXISTS system_config (
 );
 
 CREATE INDEX IF NOT EXISTS idx_system_config_type ON system_config(config_type);
+
+-- ============================================
+-- Sync Audit Log (structured sync operation records)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS sync_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,                          -- Celery task ID
+    task_name TEXT NOT NULL,               -- e.g. 'mo-iv-sync', 'mo-underlying-sync'
+    sync_mode TEXT NOT NULL,               -- calendar-driven, full, incremental
+    start_time TIMESTAMP NOT NULL,
+    end_time TIMESTAMP,
+    success INTEGER DEFAULT 0,             -- 1=success, 0=failure
+    records_fetched INTEGER DEFAULT 0,
+    error_message TEXT,
+    exchange TEXT,                         -- CFFEX, SHFE, etc.
+    product TEXT,                          -- MO, HO, IO, etc.
+    trade_date TEXT,                       -- Target trading date
+    duration_seconds REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_task ON sync_audit_log(task_name);
+CREATE INDEX IF NOT EXISTS idx_audit_log_date ON sync_audit_log(trade_date);
+CREATE INDEX IF NOT EXISTS idx_audit_log_success ON sync_audit_log(success);

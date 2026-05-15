@@ -3,10 +3,11 @@ MO data quality checks.
 
 Freshness, completeness, and cross-table consistency checks
 for MO system data tables in tzdata_trading.db.
+Calendar-driven: lag measured in trading days.
 """
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Dict, List
 
 from tzdata_pkg.config import TZDATA_TRADING_DB
@@ -54,37 +55,69 @@ def _today_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def _lag_days(date_str: str) -> int:
-    """Calculate lag in calendar days from a YYYY-MM-DD string."""
+def _latest_trading_day_str() -> str:
+    """Get the latest CFFEX trading day (previous trading day from today)."""
+    try:
+        from tzdata_pkg.maintenance.metadata.date_calculator import DateCalculator
+        dc = DateCalculator()
+        return dc.get_prev_trading_day(date.today(), n=1, exchange_code='CFFEX').isoformat()
+    except (ValueError, Exception) as e:
+        logger.warning(f"Trading calendar unavailable: {e}, falling back to today")
+        return _today_str()
+
+
+def _lag_trading_days(date_str: str) -> int:
+    """Calculate lag in trading days from a YYYY-MM-DD string."""
     if not date_str:
         return 999
     try:
-        d = datetime.strptime(date_str, "%Y-%m-%d")
-        return (datetime.now() - d).days
+        data_date = date.fromisoformat(date_str)
+        latest = _parse_latest_trading_day()
+        if data_date >= latest:
+            return 0
+
+        # Count trading days between data_date and latest
+        from tzdata_pkg.maintenance.metadata.date_calculator import DateCalculator
+        dc = DateCalculator()
+        trading_days = dc.get_trading_days_list(data_date, latest, exchange_code='CFFEX')
+        return len(trading_days) - 1  # -1 because both ends are included
     except Exception:
         return 999
 
 
+def _parse_latest_trading_day() -> date:
+    """Cached latest trading day for this check run."""
+    return date.fromisoformat(_latest_trading_day_str())
+
+
 def check_data_freshness() -> Dict:
     """
-    Check MO data freshness.
+    Check MO data freshness using trading calendar.
+
+    Lag is measured in trading days relative to the latest CFFEX trading day.
 
     Returns:
         Dict with freshness status for each data source.
     """
     conn = sqlite3.connect(str(TZDATA_TRADING_DB))
     try:
-        today = _today_str()
-        result = {"check_date": today, "iv": {}, "underlying": {}, "overall": "ok"}
+        latest_trading_day = _latest_trading_day_str()
+        result = {
+            "check_date": _today_str(),
+            "latest_trading_day": latest_trading_day,
+            "iv": {},
+            "underlying": {},
+            "overall": "ok",
+        }
 
         # Check IV data freshness
         for code, info in IV_UNDERLYINGS.items():
             latest = _get_latest_date(conn, info["table"], "underlying = ?", (code,))
-            lag = _lag_days(latest)
+            lag = _lag_trading_days(latest)
             status = "ok" if lag <= FRESH_THRESHOLD else ("stale" if lag <= STALE_THRESHOLD else "expired")
             result["iv"][code] = {
                 "latest_date": latest,
-                "lag_days": lag,
+                "lag_trading_days": lag,
                 "status": status,
             }
             if status != "ok":
@@ -93,17 +126,17 @@ def check_data_freshness() -> Dict:
         # Check underlying daily data freshness
         for code, info in UNDERLYINGS.items():
             latest = _get_latest_date(conn, info["table"], "underlying = ?", (code,))
-            lag = _lag_days(latest)
+            lag = _lag_trading_days(latest)
             status = "ok" if lag <= FRESH_THRESHOLD else ("stale" if lag <= STALE_THRESHOLD else "expired")
             result["underlying"][code] = {
                 "latest_date": latest,
-                "lag_days": lag,
+                "lag_trading_days": lag,
                 "status": status,
             }
             if status != "ok":
                 result["overall"] = "degraded"
 
-        # Check if any IV data is expired (> STALE_THRESHOLD days)
+        # Check if any IV data is expired (> STALE_THRESHOLD trading days)
         expired = [
             code for code, v in result["iv"].items() if v["status"] == "expired"
         ]
@@ -193,27 +226,27 @@ def check_cross_table_consistency() -> Dict:
     try:
         result = {"checks": [], "inconsistencies": []}
 
-        # Check 1: IV dates vs underlying dates (should be within 1 day)
+        # Check 1: IV dates vs underlying dates (should be within 1 trading day)
         iv_latest = _get_latest_date(conn, "option_sim_iv_series", "underlying = ?", ("MO",))
         idx_latest = _get_latest_date(conn, "option_sim_underlying_daily", "underlying = ?", ("000852",))
 
-        iv_lag = _lag_days(iv_latest)
-        idx_lag = _lag_days(idx_latest)
+        iv_lag = _lag_trading_days(iv_latest)
+        idx_lag = _lag_trading_days(idx_latest)
         date_diff = abs(iv_lag - idx_lag)
 
         result["checks"].append({
             "check": "IV vs Index date alignment",
             "iv_latest": iv_latest,
             "idx_latest": idx_latest,
-            "iv_lag_days": iv_lag,
-            "idx_lag_days": idx_lag,
-            "diff_days": date_diff,
+            "iv_lag_trading_days": iv_lag,
+            "idx_lag_trading_days": idx_lag,
+            "diff_trading_days": date_diff,
             "status": "consistent" if date_diff <= 1 else "inconsistent",
         })
 
         if date_diff > 1:
             result["inconsistencies"].append(
-                f"IV and Index data lag differs by {date_diff} days "
+                f"IV and Index data lag differs by {date_diff} trading days "
                 f"(IV: {iv_latest}, Index: {idx_latest})"
             )
 
@@ -227,13 +260,13 @@ def check_cross_table_consistency() -> Dict:
             for code_b in iv_dates:
                 if code_a >= code_b:
                     continue
-                lag_a = _lag_days(iv_dates[code_a])
-                lag_b = _lag_days(iv_dates[code_b])
+                lag_a = _lag_trading_days(iv_dates[code_a])
+                lag_b = _lag_trading_days(iv_dates[code_b])
                 diff = abs(lag_a - lag_b)
                 if diff > 1:
                     result["inconsistencies"].append(
                         f"IV data {code_a} ({iv_dates[code_a]}) and {code_b} ({iv_dates[code_b]}) "
-                        f"differ by {diff} days"
+                        f"differ by {diff} trading days"
                     )
 
         # Check 3: Underlying daily date alignment
@@ -243,13 +276,13 @@ def check_cross_table_consistency() -> Dict:
                     continue
                 latest_a = _get_latest_date(conn, "option_sim_underlying_daily", "underlying = ?", (code_a,))
                 latest_b = _get_latest_date(conn, "option_sim_underlying_daily", "underlying = ?", (code_b,))
-                lag_a = _lag_days(latest_a)
-                lag_b = _lag_days(latest_b)
+                lag_a = _lag_trading_days(latest_a)
+                lag_b = _lag_trading_days(latest_b)
                 diff = abs(lag_a - lag_b)
                 if diff > 1:
                     result["inconsistencies"].append(
                         f"Underlying {code_a} ({latest_a}) and {code_b} ({latest_b}) "
-                        f"differ by {diff} days"
+                        f"differ by {diff} trading days"
                     )
 
         result["overall_status"] = "consistent" if not result["inconsistencies"] else "inconsistent"

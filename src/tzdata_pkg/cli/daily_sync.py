@@ -3,8 +3,10 @@ Daily data sync for MO system.
 
 Synchronizes IV data (Tushare) and underlying daily bars (akshare)
 to tzdata_trading.db. Includes Tushare → akshare fallback.
+Calendar-driven: sync targets the latest trading day.
 """
 import logging
+import sqlite3
 import time
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -47,12 +49,84 @@ def _safe_float(val):
         return None
 
 
+# ==================== Calendar Helpers ====================
+
+def _get_latest_trading_day() -> date:
+    """Get the latest CFFEX trading day (previous trading day from today)."""
+    from tzdata_pkg.maintenance.metadata.date_calculator import DateCalculator
+    dc = DateCalculator()
+    return dc.get_prev_trading_day(date.today(), n=1, exchange_code='CFFEX')
+
+
+def _get_latest_local_underlying_date(conn: sqlite3.Connection) -> Optional[date]:
+    """Get the latest trade_date from option_sim_underlying_daily."""
+    row = conn.execute(
+        "SELECT MAX(trade_date) FROM option_sim_underlying_daily"
+    ).fetchone()
+    if row and row[0]:
+        try:
+            return date.fromisoformat(row[0])
+        except ValueError:
+            pass
+    return None
+
+
+def _get_current_mo_contract(conn: sqlite3.Connection, trade_date: str) -> Optional[str]:
+    """Get the current active MO contract for the given trade_date.
+
+    Uses mo_contract_master to find the contract whose trading range
+    covers trade_date. Falls back to contract naming convention if
+    master table is empty.
+    """
+    try:
+        row = conn.execute("""
+            SELECT contract_code FROM mo_contract_master
+            WHERE product = 'MO'
+              AND listing_date <= ?
+              AND (delist_date IS NULL OR delist_date >= ?)
+            ORDER BY listing_date DESC LIMIT 1
+        """, (trade_date, trade_date)).fetchone()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass  # Table may not exist yet
+
+    # Fallback: derive contract from trade_date
+    # MO contracts expire on 3rd Friday of the month
+    dt = datetime.strptime(trade_date, "%Y-%m-%d")
+    year = dt.year
+    month = dt.month
+
+    # Find 3rd Friday of current month
+    import calendar
+    _, last_day = calendar.monthrange(year, month)
+    fridays = 0
+    for day in range(1, last_day + 1):
+        if calendar.weekday(year, month, day) == 4:  # Friday
+            fridays += 1
+            if fridays == 3:
+                third_friday = date(year, month, day)
+                break
+    else:
+        third_friday = date(year, month, last_day)
+
+    # If we're past the 3rd Friday, use next month
+    if dt.date() >= third_friday:
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+
+    return f"MO{year % 100:02d}{month:02d}"
+
+
 # ==================== Underlying Daily Sync ====================
 
 def sync_underlying_daily(
     underlyings: list[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    calendar_driven: bool = True,
 ) -> dict:
     """
     Sync underlying daily bar data via akshare.
@@ -60,8 +134,9 @@ def sync_underlying_daily(
 
     Args:
         underlyings: List of underlying codes (default: ['000852', 'IM', '512100', 'A00'])
-        start_date: Start date YYYY-MM-DD (default: 1 year ago)
-        end_date: End date YYYY-MM-DD (default: today)
+        start_date: Start date YYYY-MM-DD (default: 1 year ago or local latest + 1)
+        end_date: End date YYYY-MM-DD (default: latest CFFEX trading day)
+        calendar_driven: If True, use trading calendar for date range (default True)
 
     Returns:
         dict with per-underlying sync results.
@@ -70,10 +145,29 @@ def sync_underlying_daily(
         underlyings = ['000852', 'IM', '512100', 'A00']
 
     now = date.today()
-    if not end_date:
-        end_date = now.isoformat()
-    if not start_date:
-        start_date = (now - timedelta(days=365)).isoformat()
+    conn = None
+    try:
+        conn = __import__('sqlite3').connect(TARGET_DB)
+        _ensure_underlying_table(conn)
+
+        if calendar_driven and not end_date:
+            try:
+                latest_trading_day = _get_latest_trading_day()
+                end_date = latest_trading_day.isoformat()
+                logger.info(f"Calendar-driven end_date: {end_date}")
+            except ValueError:
+                logger.warning("No trading calendar data, falling back to today")
+                end_date = now.isoformat()
+
+        if not start_date:
+            if calendar_driven:
+                local_latest = _get_latest_local_underlying_date(conn)
+                if local_latest:
+                    start_date = (local_latest + timedelta(days=1)).isoformat()
+                else:
+                    start_date = (now - timedelta(days=365)).isoformat()
+            else:
+                start_date = (now - timedelta(days=365)).isoformat()
 
     conn = None
     results = {}
@@ -177,21 +271,31 @@ def _fetch_underlying(ak, code: str) -> pd.DataFrame:
 def sync_iv_daily(
     underlyings: list[str] = None,
     trade_date: Optional[str] = None,
+    calendar_driven: bool = True,
 ) -> dict:
     """
     Sync option IV data from Tushare for a specific date.
 
     Args:
-        underlyings: List of underlying codes (default: ['MO'])
-        trade_date: Date to sync YYYY-MM-DD (default: today)
+        underlyings: List of underlying codes (default: ['MO', 'HO', 'IO'])
+        trade_date: Date to sync YYYY-MM-DD (default: latest CFFEX trading day)
+        calendar_driven: If True, use trading calendar for date (default True)
 
     Returns:
         dict with per-underlying sync results.
     """
     if underlyings is None:
-        underlyings = ['MO']
+        underlyings = ['MO', 'HO', 'IO']
     if not trade_date:
-        trade_date = date.today().isoformat()
+        if calendar_driven:
+            try:
+                trade_date = _get_latest_trading_day().isoformat()
+                logger.info(f"Calendar-driven trade_date: {trade_date}")
+            except ValueError:
+                logger.warning("No trading calendar data, falling back to today")
+                trade_date = date.today().isoformat()
+        else:
+            trade_date = date.today().isoformat()
 
     try:
         from tzdata_pkg.config import get_tushare_config
@@ -356,17 +460,20 @@ def run_daily_sync(
     sync_iv: bool = True,
     sync_underlying: bool = True,
     underlyings: list[str] = None,
+    calendar_driven: bool = True,
 ) -> dict:
     """Run all daily sync tasks."""
     result = {"timestamp": datetime.now().isoformat(), "iv": {}, "underlying": {}}
 
     if sync_underlying:
         logger.info("=== Syncing underlying daily data ===")
-        result["underlying"] = sync_underlying_daily(underlyings=underlyings)
+        result["underlying"] = sync_underlying_daily(
+            underlyings=underlyings, calendar_driven=calendar_driven
+        )
 
     if sync_iv:
         logger.info("=== Syncing IV data ===")
-        result["iv"] = sync_iv_daily()
+        result["iv"] = sync_iv_daily(calendar_driven=calendar_driven)
 
     result["completed_at"] = datetime.now().isoformat()
     return result
