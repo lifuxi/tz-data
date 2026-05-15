@@ -1,17 +1,23 @@
 @echo off
-chcp 936 >NUL
-REM Æô¶¯ºó¶Ë·şÎñ
-echo ÕıÔÚÆô¶¯ºó¶Ë·şÎñ...
+chcp 65001 >NUL
+REM å¯åŠ¨åç«¯æœåŠ¡
+echo æ­£åœ¨å¯åŠ¨åç«¯æœåŠ¡...
 cd /d %~dp0
 
-REM Æô¶¯ Celery Worker
-start "Celery Worker" cmd /k "cd /d %~dp0 && celery -A tzdata_pkg.scheduler.celery_app worker --loglevel=info"
+REM å¯åŠ¨ Celery Worker (gevent pool for Windows)
+start "Celery Worker" cmd /k "cd /d %~dp0 && celery -A tzdata_pkg.scheduler.celery_app worker --loglevel=info --pool=gevent"
+
+timeout /t 3 /nobreak >NUL
+
+REM å¯åŠ¨ Celery Beat (å®šæ—¶ä»»åŠ¡è°ƒåº¦)
+start "Celery Beat" cmd /k "cd /d %~dp0 && celery -A tzdata_pkg.scheduler.celery_app beat --loglevel=info"
 
 timeout /t 2 /nobreak >NUL
 
-REM Æô¶¯ FastAPI (ºó¶Ë 8000)
+REM å¯åŠ¨ FastAPI (ç«¯å£ 8000)
 start "FastAPI Backend" cmd /k "cd /d %~dp0 && uvicorn tzdata_pkg.api.server:app --reload --host 0.0.0.0 --port 8000"
 
-echo ºó¶Ë·şÎñÒÑÆô¶¯
-echo API ÌáÊ¾ : http://localhost:8000/docs
+echo åç«¯æœåŠ¡å·²å¯åŠ¨
+echo API æ–‡æ¡£: http://localhost:8000/docs
+echo Celery è°ƒåº¦: æŸ¥çœ‹ Celery Beat çª—å£æ—¥å¿—
 pause
