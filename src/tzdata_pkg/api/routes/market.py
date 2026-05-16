@@ -8,7 +8,7 @@ from tzdata_pkg.query import TzDataClient
 router = APIRouter()
 
 
-@router.get("/quotes")
+@router.get("/quotes", summary="查询行情数据", description="支持按交易所、合约、日期范围过滤行情数据")
 def get_quotes(
     exchange: Optional[str] = Query(None, description="Exchange code (CFFEX, SHFE)"),
     contract: Optional[str] = Query(None, description="Contract code"),
@@ -25,7 +25,7 @@ def get_quotes(
     return {"count": len(results), "data": results[:limit]}
 
 
-@router.get("/contracts")
+@router.get("/contracts", summary="合约列表", description="列出所有可用合约，支持按交易所过滤")
 def list_contracts(
     exchange: Optional[str] = Query(None, description="Filter by exchange"),
 ):

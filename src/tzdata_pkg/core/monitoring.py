@@ -294,20 +294,41 @@ class AlertManager:
 
 # === Pre-built Alert Handlers ===
 
-def dingtalk_webhook_handler(webhook_url: str) -> Callable:
+def dingtalk_webhook_handler(webhook_url: str, secret: str = '') -> Callable:
     """
     Create a DingTalk webhook alert handler.
-    
+
     Args:
         webhook_url: DingTalk webhook URL
-    
+        secret: DingTalk webhook secret for signature (optional)
+
     Returns:
         Alert handler function
     """
     if not NOTIFICATION_AVAILABLE:
         return lambda alert: None
-    
+
     def handler(alert: dict):
+        import hashlib
+        import hmac
+        import base64
+        import time as t
+        from urllib.parse import quote_plus
+
+        url = webhook_url
+
+        # If secret is provided, add signature
+        if secret:
+            timestamp = str(round(t.time() * 1000))
+            string_to_sign = timestamp + '\n' + secret
+            hmac_code = hmac.new(
+                secret.encode('utf-8'),
+                string_to_sign.encode('utf-8'),
+                hashlib.sha256
+            ).digest()
+            sign = quote_plus(base64.b64encode(hmac_code).decode('utf-8'))
+            url = f"{webhook_url}&timestamp={timestamp}&sign={sign}"
+
         payload = {
             "msgtype": "markdown",
             "markdown": {
@@ -318,12 +339,12 @@ def dingtalk_webhook_handler(webhook_url: str) -> Callable:
                        f"**详情**: {alert['message']}\n"
             }
         }
-        
+
         try:
-            requests.post(webhook_url, json=payload, timeout=5)
+            requests.post(url, json=payload, timeout=5)
         except Exception as e:
             print(f"Failed to send DingTalk alert: {e}")
-    
+
     return handler
 
 

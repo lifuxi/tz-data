@@ -234,6 +234,25 @@ export const mainContractAPI = {
   },
 }
 
+export const syncAPI = {
+  // Get sync status
+  getStatus() {
+    return apiClient.get('/sync/status')
+  },
+
+  // Trigger sync for a catalog
+  trigger(catalogId, mode = 'incremental', startDate = null, endDate = null) {
+    return apiClient.post('/sync/trigger', null, {
+      params: { catalog_id: catalogId, mode, start_date: startDate, end_date: endDate }
+    })
+  },
+
+  // Get sync history
+  history(params = {}) {
+    return apiClient.get('/sync/history', { params })
+  },
+}
+
 export const specialDateAPI = {
   list(params = {}) {
     return apiClient.get('/trade-calendar/special-dates', { params })
@@ -274,6 +293,12 @@ export const statementVerifyAPI = {
   },
   reconcileFromDb(accountId, startDate, endDate, tolerance = 5.0) {
     return apiClient.get(`/statements/reconcile/${accountId}`, { params: { start_date: startDate, end_date: endDate, price_tolerance_pct: tolerance } })
+  },
+}
+
+export const dashboardAPI = {
+  get() {
+    return apiClient.get('/dashboard')
   },
 }
 

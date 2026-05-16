@@ -1,8 +1,8 @@
 """
 DingTalk alert task for data sync monitoring.
 
-Reads DINGTALK_WEBHOOK_URL from .env and registers the handler
-with the global AlertManager on module import.
+Reads DingTalk webhook config from system_config DB first, then falls back to .env.
+Registers the handler with the global AlertManager on module import.
 """
 import logging
 import os
@@ -15,6 +15,27 @@ logger = logging.getLogger(__name__)
 _initialized = False
 
 
+def _get_dingtalk_webhook() -> str:
+    """Read DingTalk webhook URL from system_config DB, then fallback to .env."""
+    try:
+        from tzdata_pkg.config import _get_system_config_value
+        token = _get_system_config_value("dingtalk.webhook")
+        if token:
+            return token
+    except Exception:
+        pass
+    return os.getenv("DINGTALK_WEBHOOK_URL", "")
+
+
+def _get_dingtalk_secret() -> str:
+    """Read DingTalk webhook secret from system_config DB."""
+    try:
+        from tzdata_pkg.config import _get_system_config_value
+        return _get_system_config_value("dingtalk.secret")
+    except Exception:
+        return ""
+
+
 def _init_alerts():
     """Register DingTalk webhook handler if configured."""
     global _initialized
@@ -22,13 +43,14 @@ def _init_alerts():
         return
     _initialized = True
 
-    webhook_url = os.getenv("DINGTALK_WEBHOOK_URL", "")
+    webhook_url = _get_dingtalk_webhook()
     if not webhook_url:
-        logger.info("DingTalk webhook not configured (set DINGTALK_WEBHOOK_URL in .env)")
+        logger.info("DingTalk webhook not configured (set in system_config or DINGTALK_WEBHOOK_URL in .env)")
         return
 
     try:
-        handler = dingtalk_webhook_handler(webhook_url)
+        secret = _get_dingtalk_secret()
+        handler = dingtalk_webhook_handler(webhook_url, secret)
         get_alert_manager().register_handler(handler)
         logger.info("DingTalk alert handler registered")
     except Exception as e:

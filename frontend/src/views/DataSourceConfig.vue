@@ -60,6 +60,31 @@
           </div>
         </el-tab-pane>
 
+        <el-tab-pane label="告警通知" name="alerts">
+          <p class="desc">配置钉钉机器人 Webhook，数据同步异常时自动推送告警通知。</p>
+          <el-card shadow="hover" style="margin-top: 16px; max-width: 600px;">
+            <el-form label-width="100px" label-position="top">
+              <el-form-item label="Webhook URL">
+                <el-input v-model="dingtalkForm.webhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx" show-password />
+              </el-form-item>
+              <el-form-item label="签名密钥（Secret）">
+                <el-input v-model="dingtalkForm.secret" placeholder="SECxxxxxxxx（可选）" show-password />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" @click="saveDingtalkConfig">保存配置</el-button>
+                <el-button @click="testDingtalkNotification" :loading="testingNotify">发送测试通知</el-button>
+              </el-form-item>
+            </el-form>
+          </el-card>
+          <el-alert type="info" :closable="false" style="margin-top: 16px; max-width: 600px;">
+            <template #title>配置说明</template>
+            1. 在钉钉群中添加自定义机器人，获取 Webhook URL 和签名密钥<br>
+            2. Webhook URL 格式：https://oapi.dingtalk.com/robot/send?access_token=xxx<br>
+            3. 签名密钥用于消息签名防篡改，可选但推荐开启<br>
+            4. 配置后，数据同步任务失败/异常时将自动推送钉钉通知
+          </el-alert>
+        </el-tab-pane>
+
         <el-tab-pane label="账户凭证" name="credentials">
           <el-alert title="凭证安全说明" type="info" :closable="false" style="margin-bottom:16px">
             期货监控中心（CFMMC）登录凭证经 AES-256 加密后存储在本地数据库中，仅在自动抓取账单时临时解密。
@@ -142,6 +167,10 @@ const sourceConfig = ref({ token: '', username: '', password: '' })
 const credentialDialogVisible = ref(false)
 const currentAccount = ref(null)
 const credentialForm = ref({ username: '', password: '' })
+
+// DingTalk config
+const dingtalkForm = ref({ webhook: '', secret: '' })
+const testingNotify = ref(false)
 
 const calendarStats = ref({ days2025: 0, days2026: 0 })
 
@@ -277,6 +306,57 @@ const loadCalendarStats = async () => {
   } catch {}
 }
 
+const loadDingtalkConfig = async () => {
+  try {
+    const [whRes, secRes] = await Promise.all([
+      axios.get('/api/maintenance/system-config/dingtalk.webhook').catch(() => null),
+      axios.get('/api/maintenance/system-config/dingtalk.secret').catch(() => null),
+    ])
+    if (whRes?.data?.success) dingtalkForm.value.webhook = whRes.data.data?.value || ''
+    if (secRes?.data?.success) dingtalkForm.value.secret = secRes.data.data?.value || ''
+  } catch {}
+}
+
+const saveDingtalkConfig = async () => {
+  if (!dingtalkForm.value.webhook) {
+    ElMessage.warning('请输入 Webhook URL')
+    return
+  }
+  try {
+    await axios.put('/api/maintenance/system-config', {
+      key: 'dingtalk.webhook',
+      value: dingtalkForm.value.webhook,
+      config_type: 'secret',
+      description: '钉钉机器人 Webhook URL'
+    })
+    if (dingtalkForm.value.secret) {
+      await axios.put('/api/maintenance/system-config', {
+        key: 'dingtalk.secret',
+        value: dingtalkForm.value.secret,
+        config_type: 'secret',
+        description: '钉钉机器人签名密钥'
+      })
+    }
+    ElMessage.success('钉钉配置已保存')
+  } catch (e) {
+    ElMessage.error('保存失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+const testDingtalkNotification = async () => {
+  testingNotify.value = true
+  try {
+    const res = await axios.post('/api/maintenance/notification/test')
+    if (res.data?.success) {
+      ElMessage.success('测试通知发送成功，请检查钉钉群消息')
+    }
+  } catch (e) {
+    ElMessage.error('发送失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    testingNotify.value = false
+  }
+}
+
 const configCredential = (account) => {
   currentAccount.value = account
   credentialForm.value = { username: '', password: '' }
@@ -306,6 +386,7 @@ onMounted(() => {
   loadAccounts()
   loadSourceConfigs()
   loadCalendarStats()
+  loadDingtalkConfig()
 })
 </script>
 

@@ -493,3 +493,21 @@ CREATE TABLE IF NOT EXISTS sync_audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_log_task ON sync_audit_log(task_name);
 CREATE INDEX IF NOT EXISTS idx_audit_log_date ON sync_audit_log(trade_date);
 CREATE INDEX IF NOT EXISTS idx_audit_log_success ON sync_audit_log(success);
+
+-- ============================================================
+-- Task failure log (Celery task_failure signal handler)
+-- Quick-query table for frontend sync failure alerts
+-- ============================================================
+CREATE TABLE IF NOT EXISTS task_failure_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_name TEXT NOT NULL,
+    task_id TEXT,
+    error_type TEXT,
+    error_message TEXT,
+    failed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    notified INTEGER DEFAULT 0,
+    retries INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_failure_log_task ON task_failure_log(task_name);
+CREATE INDEX IF NOT EXISTS idx_failure_log_time ON task_failure_log(failed_at);

@@ -3,12 +3,13 @@
 from typing import Optional
 from fastapi import APIRouter, Query
 
+from tzdata_pkg.cache.cache_service import cache_result
 from tzdata_pkg.query import TzDataClient
 
 router = APIRouter()
 
 
-@router.get("/signals")
+@router.get("/signals", summary="交易信号", description="查询系统生成的交易信号数据")
 def get_signals(
     signal_type: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
@@ -20,7 +21,8 @@ def get_signals(
     return {"count": len(results), "data": results}
 
 
-@router.get("/regime")
+@router.get("/regime", summary="市场状态", description="查询市场状态分类（趋势/震荡/突破等）")
+@cache_result("market_regime", ttl=86400, tags=["regime"])
 def get_market_regime(
     trade_date: Optional[str] = Query(None),
 ):
@@ -30,7 +32,7 @@ def get_market_regime(
     return {"count": len(results), "data": results}
 
 
-@router.get("/institution-features")
+@router.get("/institution-features", summary="机构特征", description="查询机构会员的持仓特征数据")
 def get_institution_features(
     member_name: Optional[str] = Query(None),
     trade_date: Optional[str] = Query(None),
@@ -41,7 +43,8 @@ def get_institution_features(
     return {"count": len(results), "data": results}
 
 
-@router.get("/option-features")
+@router.get("/option-features", summary="期权特征", description="查询期权特征数据（含 Greeks）")
+@cache_result("option_greeks", ttl=86400, tags=["option", "greeks"])
 def get_option_features(
     trade_date: Optional[str] = Query(None),
     contract: Optional[str] = Query(None),
@@ -52,7 +55,7 @@ def get_option_features(
     return {"count": len(results), "data": results}
 
 
-@router.get("/iv-snapshot")
+@router.get("/iv-snapshot", summary="IV 快照", description="查询隐含波动率快照数据")
 def get_iv_snapshot(
     trade_date: Optional[str] = Query(None),
     underlying: Optional[str] = Query(None),
@@ -63,7 +66,7 @@ def get_iv_snapshot(
     return {"count": len(results), "data": results}
 
 
-@router.get("/tushare-daily")
+@router.get("/tushare-daily", summary="Tushare 日线", description="查询 Tushare 日线数据")
 def get_tushare_daily(
     ts_code: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),

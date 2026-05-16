@@ -8,7 +8,7 @@ from tzdata_pkg.query import TzDataClient
 router = APIRouter()
 
 
-@router.get("/bills")
+@router.get("/bills", summary="账单列表", description="查询账单记录，支持按账户和日期范围过滤")
 def get_bills(
     account_id: Optional[str] = Query(None, description="Account ID"),
     start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
@@ -20,7 +20,7 @@ def get_bills(
     return {"count": len(results), "data": results}
 
 
-@router.get("/trades")
+@router.get("/trades", summary="交易记录", description="查询交易明细，支持按账户和日期范围过滤")
 def get_trades(
     account_id: Optional[str] = Query(None, description="Account ID"),
     start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
@@ -32,7 +32,7 @@ def get_trades(
     return {"count": len(results), "data": results}
 
 
-@router.get("/pnl")
+@router.get("/pnl", summary="盈亏汇总", description="查询账户盈亏汇总，支持按日期范围过滤")
 def get_pnl(
     account_id: Optional[str] = Query(None, description="Account ID"),
     start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
@@ -46,7 +46,7 @@ def get_pnl(
     return summary
 
 
-@router.get("/account-summary")
+@router.get("/account-summary", summary="账户概览", description="查询账户基本信息和资金状况")
 def get_account_summary(account_id: Optional[str] = Query(None)):
     """Account summary."""
     with TzDataClient() as client:

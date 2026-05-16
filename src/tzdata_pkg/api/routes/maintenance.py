@@ -32,7 +32,7 @@ class SystemConfigRequest(BaseModel):
 
 # === Catalog Endpoints ===
 
-@router.get("/catalogs")
+@router.get("/catalogs", summary="数据目录列表")
 def list_catalogs(
     exchange: Optional[str] = None,
     product: Optional[str] = None
@@ -50,7 +50,7 @@ def list_catalogs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/catalogs")
+@router.post("/catalogs", summary="创建数据目录")
 def create_catalog(request: dict):
     """Create a new data catalog."""
     from tzdata_pkg.maintenance.metadata.catalog_manager import CatalogManager
@@ -62,7 +62,7 @@ def create_catalog(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/catalogs/{catalog_id}")
+@router.get("/catalogs/{catalog_id}", summary="目录详情")
 def get_catalog(catalog_id: int):
     """Get a catalog by ID."""
     from tzdata_pkg.maintenance.metadata.catalog_manager import CatalogManager
@@ -78,7 +78,7 @@ def get_catalog(catalog_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/catalogs/{catalog_id}")
+@router.put("/catalogs/{catalog_id}", summary="更新数据目录")
 def update_catalog(catalog_id: int, request: dict):
     """Update a catalog."""
     from tzdata_pkg.maintenance.metadata.catalog_manager import CatalogManager
@@ -117,7 +117,7 @@ def update_catalog(catalog_id: int, request: dict):
 
 # === Health Check Endpoints ===
 
-@router.get("/health/snapshot")
+@router.get("/health/snapshot", summary="最新健康快照")
 def get_health_snapshot(catalog_id: int):
     """Get latest health snapshot for a catalog."""
     from tzdata_pkg.maintenance.monitoring.health_snapshot import HealthSnapshotGenerator
@@ -135,7 +135,7 @@ def get_health_snapshot(catalog_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/health/diff")
+@router.get("/health/diff", summary="健康快照差异对比")
 def get_diff_status():
     """Get diff status for all catalogs."""
     from tzdata_pkg.maintenance.monitoring.health_snapshot import HealthSnapshotGenerator
@@ -149,11 +149,177 @@ def get_diff_status():
 
 # === Quality Check Endpoints ===
 
-@router.get("/quality/{catalog_id}")
+@router.get("/quality/overview", summary="数据质量总览")
+def quality_overview():
+    """
+    Combined data quality overview: reconciliation status + gap detection + health snapshots.
+    Single endpoint for the frontend quality dashboard tab.
+    """
+    from tzdata_pkg.maintenance.metadata.catalog_manager import CatalogManager
+    from tzdata_pkg.maintenance.monitoring.health_snapshot import HealthSnapshotGenerator
+    from tzdata_pkg.maintenance.metadata.trade_calendar import TradeCalendarManager
+    from tzdata_pkg.storage.db_registry import DBRegistry
+
+    catalogs = CatalogManager.get_enabled_catalogs()
+    pool = DBRegistry().get_pool('market')
+    result = []
+
+    for cat in catalogs:
+        catalog_id = cat['id']
+        exchange = cat.get('exchange_code', '')
+        product_code = cat.get('product_code', '')
+        contract_code = cat.get('contract_code', '')
+        data_type = cat.get('data_type', '')
+
+        item = {
+            'catalog_id': catalog_id,
+            'name': cat.get('catalog_name', ''),
+            'exchange': exchange,
+            'product': product_code,
+            'data_type': data_type,
+        }
+
+        # 1. Get recorded total from data_status_local
+        with pool.transaction() as conn:
+            row = conn.execute("""
+                SELECT total_records, earliest_date, latest_date
+                FROM data_status_local WHERE catalog_id = ?
+            """, (catalog_id,)).fetchone()
+            item['recorded_total'] = row[0] if row and row[0] else 0
+            item['earliest_date'] = row[1] if row and row[1] else '-'
+            item['latest_date'] = row[2] if row and row[2] else '-'
+
+        # 2. Get actual total from table COUNT(*)
+        try:
+            with pool.connection() as conn:
+                if data_type == 'daily':
+                    if contract_code:
+                        query = "SELECT COUNT(*) FROM daily_quotes WHERE exchange=? AND contract_code=?"
+                        params = (exchange, contract_code)
+                    elif product_code:
+                        query = "SELECT COUNT(*) FROM daily_quotes WHERE exchange=? AND contract_code LIKE ?"
+                        params = (exchange, f'{product_code}%')
+                    else:
+                        query = "SELECT COUNT(*) FROM daily_quotes WHERE exchange=?"
+                        params = (exchange,)
+                elif data_type in ('top20_holdings', 'position'):
+                    if contract_code:
+                        query = "SELECT COUNT(*) FROM position_detail WHERE exchange=? AND contract_code=?"
+                        params = (exchange, contract_code)
+                    elif product_code:
+                        query = "SELECT COUNT(*) FROM position_detail WHERE exchange=? AND contract_code LIKE ?"
+                        params = (exchange, f'{product_code}%')
+                    else:
+                        query = "SELECT COUNT(*) FROM position_detail WHERE exchange=?"
+                        params = (exchange,)
+                else:
+                    query = None
+
+                if query:
+                    item['actual_total'] = conn.execute(query, params).fetchone()[0]
+                else:
+                    item['actual_total'] = 0
+        except Exception:
+            item['actual_total'] = 0
+
+        # 3. Drift
+        item['drift'] = abs((item.get('recorded_total', 0) or 0) - (item.get('actual_total', 0) or 0))
+        item['drift_status'] = 'ok' if item['drift'] == 0 else ('warn' if item['drift'] < max(item['actual_total'] * 0.01, 100) else 'error')
+
+        # 4. Expected trading days vs actual
+        if item['earliest_date'] and item['latest_date'] and item['earliest_date'] != '-':
+            try:
+                from datetime import date as _date
+                def _parse_d(s):
+                    if isinstance(s, _date): return s
+                    if '-' in s: return _date.fromisoformat(s)
+                    return _date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+
+                earliest = _parse_d(item['earliest_date'])
+                latest = _parse_d(item['latest_date'])
+
+                if product_code and data_type == 'daily':
+                    trading_days = TradeCalendarManager.get_product_trading_days(product_code, earliest, latest)
+                    if not trading_days:
+                        trading_days = TradeCalendarManager.get_trading_days(earliest, latest, exchange)
+                else:
+                    trading_days = TradeCalendarManager.get_trading_days(earliest, latest, exchange)
+
+                item['expected_days'] = len(trading_days)
+
+                # Actual unique dates
+                def _norm_d(dt):
+                    if '-' in dt: return dt
+                    return f'{dt[:4]}-{dt[4:6]}-{dt[6:8]}'
+
+                with pool.connection() as conn:
+                    if data_type == 'daily':
+                        if contract_code:
+                            rows = conn.execute("SELECT DISTINCT trade_date FROM daily_quotes WHERE exchange=? AND contract_code=?", (exchange, contract_code)).fetchall()
+                        elif product_code:
+                            rows = conn.execute("SELECT DISTINCT trade_date FROM daily_quotes WHERE exchange=? AND contract_code LIKE ?", (exchange, f'{product_code}%')).fetchall()
+                        else:
+                            rows = []
+                    elif data_type in ('top20_holdings', 'position'):
+                        if contract_code:
+                            rows = conn.execute("SELECT DISTINCT trade_date FROM position_detail WHERE exchange=? AND contract_code=?", (exchange, contract_code)).fetchall()
+                        elif product_code:
+                            rows = conn.execute("SELECT DISTINCT trade_date FROM position_detail WHERE exchange=? AND contract_code LIKE ?", (exchange, f'{product_code}%')).fetchall()
+                        else:
+                            rows = []
+                    else:
+                        rows = []
+
+                actual_dates = {_norm_d(r[0]) for r in rows}
+                trading_set = {d.isoformat() for d in trading_days}
+                missing = sorted(trading_set - actual_dates)
+
+                item['actual_days'] = len(actual_dates & trading_set)
+                item['missing_days'] = len(missing)
+                item['missing_dates'] = missing[:5]  # First 5 for display
+                item['completeness_pct'] = round((len(trading_set) - len(missing)) / len(trading_set) * 100, 1) if trading_set else 100.0
+            except Exception:
+                item['expected_days'] = 0
+                item['actual_days'] = 0
+                item['missing_days'] = 0
+                item['missing_dates'] = []
+                item['completeness_pct'] = 0.0
+        else:
+            item['expected_days'] = 0
+            item['actual_days'] = 0
+            item['missing_days'] = 0
+            item['missing_dates'] = []
+            item['completeness_pct'] = 0.0
+
+        # 5. Health snapshot
+        snapshot = HealthSnapshotGenerator.get_latest_snapshot(catalog_id)
+        item['quality_score'] = snapshot.get('data_quality_score', 0) if snapshot else 0
+        item['consistency_status'] = snapshot.get('consistency_status', 'unknown') if snapshot else 'unknown'
+
+        result.append(item)
+
+    # Summary
+    total_catalogs = len(result)
+    missing_count = sum(1 for r in result if r.get('missing_days', 0) > 0)
+    drift_count = sum(1 for r in result if r.get('drift_status') == 'error')
+
+    return {
+        'success': True,
+        'data': result,
+        'summary': {
+            'total_catalogs': total_catalogs,
+            'catalogs_missing': missing_count,
+            'catalogs_with_drift': drift_count,
+            'avg_completeness': round(sum(r.get('completeness_pct', 0) for r in result) / total_catalogs, 1) if total_catalogs else 0,
+        }
+    }
+
+
+@router.get("/quality/{catalog_id}", summary="目录质量评估")
 def check_quality(catalog_id: int):
     """Check data quality for a catalog."""
     from tzdata_pkg.maintenance.monitoring.quality_evaluator import QualityEvaluator
-    
+
     try:
         quality = QualityEvaluator.evaluate_catalog_quality(catalog_id)
         return {"success": True, "data": quality}
@@ -163,7 +329,7 @@ def check_quality(catalog_id: int):
 
 # === Health Snapshot Endpoints (RESTful) ===
 
-@router.post("/health-snapshots/generate")
+@router.post("/health-snapshots/generate", summary="生成健康快照")
 def generate_all_snapshots():
     """Generate health snapshots for all enabled catalogs."""
     from tzdata_pkg.maintenance.monitoring.health_snapshot import HealthSnapshotGenerator
@@ -181,7 +347,7 @@ def generate_all_snapshots():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/health-snapshots")
+@router.get("/health-snapshots", summary="历史健康快照列表")
 def list_health_snapshots(
     page: int = 1,
     page_size: int = 20
@@ -235,7 +401,7 @@ def list_health_snapshots(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/health-snapshots/latest")
+@router.get("/health-snapshots/latest", summary="最新健康快照")
 def get_latest_health_snapshot():
     """Get aggregated latest health snapshots across all catalogs."""
     from tzdata_pkg.maintenance.monitoring.health_snapshot import HealthSnapshotGenerator
@@ -327,7 +493,7 @@ def get_latest_health_snapshot():
 
 # === Account Management Endpoints ===
 
-@router.get("/accounts")
+@router.get("/accounts", summary="账户列表")
 def list_accounts(active_only: bool = True):
     """List futures accounts."""
     from tzdata_pkg.maintenance.statements.account_manager import AccountManager
@@ -339,7 +505,7 @@ def list_accounts(active_only: bool = True):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/accounts")
+@router.post("/accounts", summary="创建账户")
 def create_account(request: AccountCreateRequest):
     """Create a new futures account."""
     from tzdata_pkg.maintenance.statements.account_manager import AccountManager
@@ -362,7 +528,7 @@ def create_account(request: AccountCreateRequest):
 
 # === Exchange Management Endpoints ===
 
-@router.get("/exchanges")
+@router.get("/exchanges", summary="交易所列表")
 def list_exchanges(active_only: bool = True):
     from tzdata_pkg.maintenance.metadata.exchange_manager import ExchangeManager
     try:
@@ -372,7 +538,7 @@ def list_exchanges(active_only: bool = True):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/exchanges")
+@router.post("/exchanges", summary="创建交易所")
 def create_exchange(request: dict):
     from tzdata_pkg.maintenance.metadata.exchange_manager import ExchangeManager
     try:
@@ -382,7 +548,7 @@ def create_exchange(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/exchanges/{exchange_id}")
+@router.put("/exchanges/{exchange_id}", summary="更新交易所")
 def update_exchange(exchange_id: int, request: dict):
     from tzdata_pkg.maintenance.metadata.exchange_manager import ExchangeManager
     try:
@@ -392,7 +558,7 @@ def update_exchange(exchange_id: int, request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/exchanges/{exchange_id}")
+@router.delete("/exchanges/{exchange_id}", summary="删除交易所")
 def delete_exchange(exchange_id: int):
     from tzdata_pkg.maintenance.metadata.exchange_manager import ExchangeManager
     try:
@@ -404,7 +570,7 @@ def delete_exchange(exchange_id: int):
 
 # === Product Management Endpoints ===
 
-@router.get("/products")
+@router.get("/products", summary="品种列表")
 def list_products(exchange_code: Optional[str] = None):
     from tzdata_pkg.maintenance.metadata.product_manager import ProductManager
     try:
@@ -414,7 +580,7 @@ def list_products(exchange_code: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/products")
+@router.post("/products", summary="创建品种")
 def create_product(request: dict):
     from tzdata_pkg.maintenance.metadata.product_manager import ProductManager
     try:
@@ -424,7 +590,7 @@ def create_product(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/products/{product_id}")
+@router.put("/products/{product_id}", summary="更新品种")
 def update_product(product_id: int, request: dict):
     from tzdata_pkg.maintenance.metadata.product_manager import ProductManager
     try:
@@ -434,7 +600,7 @@ def update_product(product_id: int, request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/products/{product_id}")
+@router.delete("/products/{product_id}", summary="删除品种")
 def delete_product(product_id: int):
     from tzdata_pkg.maintenance.metadata.product_manager import ProductManager
     try:
@@ -447,7 +613,7 @@ def delete_product(product_id: int):
 
 # === Contract Sync (must be before /contracts/{contract_id} to avoid route conflict) ===
 
-@router.post("/contracts/import-from-tushare")
+@router.post("/contracts/import-from-tushare", summary="从Tushare导入合约")
 def import_contracts_from_tushare(exchange: str = 'CFFEX', contract_type: str = 'futures'):
     """Import contracts from Tushare API. Auto-populates main contracts after import."""
     import logging
@@ -483,7 +649,7 @@ def import_contracts_from_tushare(exchange: str = 'CFFEX', contract_type: str = 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/contracts/check-expired")
+@router.post("/contracts/check-expired", summary="检查到期合约")
 def check_expired_contracts(reference_date: Optional[str] = None):
     """Mark expired contracts."""
     from datetime import datetime
@@ -497,7 +663,7 @@ def check_expired_contracts(reference_date: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/contracts/expiring")
+@router.get("/contracts/expiring", summary="即将到期合约列表")
 def get_expiring_contracts(date: Optional[str] = None, days_ahead: int = 30):
     """Get contracts expiring within N days."""
     from datetime import datetime
@@ -513,7 +679,7 @@ def get_expiring_contracts(date: Optional[str] = None, days_ahead: int = 30):
 
 # === Contract Management Endpoints ===
 
-@router.get("/contracts")
+@router.get("/contracts", summary="合约列表")
 def list_contracts(exchange_code: Optional[str] = None, product_code: Optional[str] = None,
                    status: Optional[str] = None):
     from tzdata_pkg.maintenance.metadata.contract_manager import ContractManager
@@ -524,7 +690,7 @@ def list_contracts(exchange_code: Optional[str] = None, product_code: Optional[s
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/contracts")
+@router.post("/contracts", summary="创建合约")
 def create_contract(request: dict):
     from tzdata_pkg.maintenance.metadata.contract_manager import ContractManager
     try:
@@ -534,7 +700,7 @@ def create_contract(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/contracts/{contract_id}")
+@router.put("/contracts/{contract_id}", summary="更新合约")
 def update_contract(contract_id: int, request: dict):
     from tzdata_pkg.maintenance.metadata.contract_manager import ContractManager
     try:
@@ -544,7 +710,7 @@ def update_contract(contract_id: int, request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/contracts/{contract_id}")
+@router.delete("/contracts/{contract_id}", summary="删除合约")
 def delete_contract(contract_id: int):
     from tzdata_pkg.maintenance.metadata.contract_manager import ContractManager
     try:
@@ -556,7 +722,7 @@ def delete_contract(contract_id: int):
 
 # === Alert Management Endpoints ===
 
-@router.get("/alerts")
+@router.get("/alerts", summary="告警列表")
 def list_alerts(
     level: Optional[str] = None,
     category: Optional[str] = None,
@@ -597,7 +763,7 @@ def list_alerts(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/alerts/recent")
+@router.get("/alerts/recent", summary="最近告警")
 def get_recent_alerts(limit: int = 50):
     """Get recent alerts."""
     from tzdata_pkg.core.monitoring import get_alert_manager
@@ -616,7 +782,7 @@ def get_recent_alerts(limit: int = 50):
 
 # === Trade Calendar Endpoints ===
 
-@router.post("/trade-calendar/init")
+@router.post("/trade-calendar/init", summary="初始化交易日历")
 def init_trade_calendar(year_start: int = 2025, year_end: int = 2026):
     """Initialize trade calendar with Chinese futures exchange holidays."""
     from tzdata_pkg.maintenance.metadata.trade_calendar import TradeCalendarManager
@@ -627,7 +793,7 @@ def init_trade_calendar(year_start: int = 2025, year_end: int = 2026):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/trading-days")
+@router.get("/trade-calendar/trading-days", summary="交易日列表")
 def get_trading_days(start_date: str, end_date: str, exchange_code: str = 'ALL'):
     """Get trading days between two dates."""
     from tzdata_pkg.maintenance.metadata.trade_calendar import TradeCalendarManager
@@ -641,7 +807,7 @@ def get_trading_days(start_date: str, end_date: str, exchange_code: str = 'ALL')
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/is-trading-day")
+@router.get("/trade-calendar/is-trading-day", summary="是否交易日")
 def is_trading_day(trade_date: str, exchange_code: str = 'ALL'):
     """Check if a date is a trading day."""
     from tzdata_pkg.maintenance.metadata.trade_calendar import TradeCalendarManager
@@ -654,7 +820,7 @@ def is_trading_day(trade_date: str, exchange_code: str = 'ALL'):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/calendar")
+@router.get("/trade-calendar/calendar", summary="日历数据")
 def get_calendar_view(year: int, exchange_code: str = 'ALL'):
     """Get full calendar data for a year, suitable for month/week calendar rendering."""
     from tzdata_pkg.maintenance.metadata.trade_calendar import TradeCalendarManager
@@ -713,7 +879,7 @@ def get_calendar_view(year: int, exchange_code: str = 'ALL'):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/status")
+@router.get("/trade-calendar/status", summary="日历状态")
 def get_calendar_status():
     """Get overall calendar status."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -739,7 +905,7 @@ def get_calendar_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/count")
+@router.get("/trade-calendar/count", summary="交易日计数")
 def get_calendar_count():
     """Legacy endpoint for calendar counts."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -759,7 +925,7 @@ def get_calendar_count():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/product/stats")
+@router.get("/trade-calendar/product/stats", summary="产品日历统计")
 def get_product_stats(product_code: str):
     """Get statistics for a product calendar."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -789,7 +955,7 @@ def get_product_stats(product_code: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/trade-calendar/product/init")
+@router.post("/trade-calendar/product/init", summary="产品日历初始化")
 def init_product_calendar(
     product_code: str,
     year_start: int = 2025,
@@ -809,7 +975,7 @@ def init_product_calendar(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/trade-calendar/system-init")
+@router.post("/trade-calendar/system-init", summary="系统初始化日历")
 def system_init_calendar(year_end: int = 2026, init_products: bool = True):
     """Run full system initialization: 1990-year_end exchange calendar + CFFEX product calendars."""
     from tzdata_pkg.cli.calendar_system_init import run_system_init
@@ -820,7 +986,7 @@ def system_init_calendar(year_end: int = 2026, init_products: bool = True):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/product/listing-dates")
+@router.get("/trade-calendar/product/listing-dates", summary="产品上市日期")
 def get_listing_dates():
     """Get all product listing dates."""
     from tzdata_pkg.maintenance.metadata import trade_calendar
@@ -831,7 +997,7 @@ def get_listing_dates():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/product/trading-days")
+@router.get("/trade-calendar/product/trading-days", summary="产品交易日列表")
 def get_product_trading_days(
     product_code: str,
     start_date: str,
@@ -849,7 +1015,7 @@ def get_product_trading_days(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/trade-calendar/add-holiday")
+@router.post("/trade-calendar/add-holiday", summary="添加节假日")
 def add_holiday(trade_date: str, holiday_name: str, exchange_code: str = 'ALL'):
     """Add a holiday to the trade calendar."""
     from tzdata_pkg.maintenance.metadata.trade_calendar import TradeCalendarManager
@@ -862,7 +1028,7 @@ def add_holiday(trade_date: str, holiday_name: str, exchange_code: str = 'ALL'):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/next-trading-day")
+@router.get("/trade-calendar/next-trading-day", summary="下一个交易日")
 def get_next_trading_day(date: str, n: int = 1, exchange_code: str = 'ALL'):
     """Get the nth trading day after the given date."""
     from tzdata_pkg.maintenance.metadata.date_calculator import DateCalculator
@@ -878,7 +1044,7 @@ def get_next_trading_day(date: str, n: int = 1, exchange_code: str = 'ALL'):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/prev-trading-day")
+@router.get("/trade-calendar/prev-trading-day", summary="上一个交易日")
 def get_prev_trading_day(date: str, n: int = 1, exchange_code: str = 'ALL'):
     """Get the nth trading day before the given date."""
     from tzdata_pkg.maintenance.metadata.date_calculator import DateCalculator
@@ -894,7 +1060,7 @@ def get_prev_trading_day(date: str, n: int = 1, exchange_code: str = 'ALL'):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/trading-days-count")
+@router.get("/trade-calendar/trading-days-count", summary="区间交易日数")
 def get_trading_days_count(start_date: str, end_date: str, exchange_code: str = 'ALL'):
     """Count trading days in a date range (inclusive)."""
     from tzdata_pkg.maintenance.metadata.date_calculator import DateCalculator
@@ -911,7 +1077,7 @@ def get_trading_days_count(start_date: str, end_date: str, exchange_code: str = 
 
 # === Tushare Calendar Import ===
 
-@router.post("/trade-calendar/import-from-tushare")
+@router.post("/trade-calendar/import-from-tushare", summary="从Tushare导入日历")
 def import_calendar_from_tushare(exchange: str = 'CFFEX', start_date: str = None, end_date: str = None):
     """Import trade calendar from Tushare API."""
     from tzdata_pkg.cli.import_trade_calendar import CalendarImporter
@@ -925,7 +1091,7 @@ def import_calendar_from_tushare(exchange: str = 'CFFEX', start_date: str = None
 
 # === Calendar Cache ===
 
-@router.get("/trade-calendar/cache/status")
+@router.get("/trade-calendar/cache/status", summary="缓存状态")
 def get_cache_status():
     """Get calendar cache status."""
     from tzdata_pkg.maintenance.metadata.calendar_cache import CalendarCache
@@ -933,7 +1099,7 @@ def get_cache_status():
     return {"success": True, "cache": cache.status()}
 
 
-@router.post("/trade-calendar/cache/preload")
+@router.post("/trade-calendar/cache/preload", summary="缓存预热")
 def preload_cache(years: Optional[str] = None):
     """Preload calendar cache. Years as comma-separated list (e.g. '2025,2026,2027')."""
     from tzdata_pkg.maintenance.metadata.calendar_cache import CalendarCache
@@ -945,7 +1111,7 @@ def preload_cache(years: Optional[str] = None):
 
 # === Special Date Override ===
 
-@router.post("/trade-calendar/special-dates")
+@router.post("/trade-calendar/special-dates", summary="添加特殊日期")
 def create_special_date(
     exchange_code: str,
     trade_date: str,
@@ -965,7 +1131,7 @@ def create_special_date(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trade-calendar/special-dates")
+@router.get("/trade-calendar/special-dates", summary="特殊日期列表")
 def list_special_dates(
     exchange_code: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -984,7 +1150,7 @@ def list_special_dates(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/trade-calendar/special-dates")
+@router.delete("/trade-calendar/special-dates", summary="删除特殊日期")
 def delete_special_date(exchange_code: str, trade_date: str):
     """Delete a special date override."""
     from datetime import datetime
@@ -1000,7 +1166,7 @@ def delete_special_date(exchange_code: str, trade_date: str):
 
 # === Main Contract Identification ===
 
-@router.get("/main-contract/{product_code}")
+@router.get("/main-contract/{product_code}", summary="获取主力合约")
 def get_main_contract(product_code: str, date: str):
     """Get main contract for a product on a given date."""
     from datetime import datetime
@@ -1014,7 +1180,7 @@ def get_main_contract(product_code: str, date: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/main-contract/{product_code}")
+@router.post("/main-contract/{product_code}", summary="设置主力合约")
 def set_main_contract(product_code: str, date: str, contract_code: str):
     """Manually set main contract for a date."""
     from datetime import datetime
@@ -1028,7 +1194,7 @@ def set_main_contract(product_code: str, date: str, contract_code: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/main-contract/{product_code}/series")
+@router.get("/main-contract/{product_code}/series", summary="主力合约序列")
 def get_main_contract_series(product_code: str, start_date: str, end_date: str):
     """Get main contract series for a date range."""
     from datetime import datetime
@@ -1043,7 +1209,7 @@ def get_main_contract_series(product_code: str, start_date: str, end_date: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/main-contract/{product_code}/rollovers")
+@router.get("/main-contract/{product_code}/rollovers", summary="换月记录")
 def get_rollover_dates(product_code: str, start_date: str, end_date: str):
     """Get rollover dates (when main contract changes)."""
     from datetime import datetime
@@ -1058,7 +1224,7 @@ def get_rollover_dates(product_code: str, start_date: str, end_date: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/main-contract/{product_code}/auto-populate")
+@router.post("/main-contract/{product_code}/auto-populate", summary="自动填充主力合约")
 def auto_populate_main_contract(product_code: str, start_date: str, end_date: str):
     """Auto-populate main contract mappings from open interest data."""
     from datetime import datetime
@@ -1075,7 +1241,7 @@ def auto_populate_main_contract(product_code: str, start_date: str, end_date: st
 
 # === Trading Hours Management ===
 
-@router.get("/trading-hours/is-trading-time")
+@router.get("/trading-hours/is-trading-time", summary="是否交易时间")
 def check_trading_time(template_id: str, time_str: str):
     """Check if a time is within trading hours."""
     from tzdata_pkg.maintenance.metadata.trading_hours import TradingHoursManager
@@ -1087,7 +1253,7 @@ def check_trading_time(template_id: str, time_str: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trading-hours/{template_id}")
+@router.get("/trading-hours/{template_id}", summary="交易时间模板详情")
 def get_trading_hours_template(template_id: str):
     """Get trading hours template by ID."""
     from tzdata_pkg.maintenance.metadata.trading_hours import TradingHoursManager
@@ -1103,7 +1269,7 @@ def get_trading_hours_template(template_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/trading-hours/templates")
+@router.post("/trading-hours/templates", summary="创建交易时间模板")
 def create_trading_hours_template(
     template_id: str,
     template_name: str,
@@ -1132,7 +1298,7 @@ def create_trading_hours_template(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/trading-hours/{template_id}/sessions")
+@router.get("/trading-hours/{template_id}/sessions", summary="时段列表")
 def get_trading_sessions(template_id: str):
     """Get all trading sessions for a template."""
     from tzdata_pkg.maintenance.metadata.trading_hours import TradingHoursManager
@@ -1151,7 +1317,7 @@ import uuid
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "uploads")
 
 
-@router.get("/statements")
+@router.get("/statements", summary="账单列表")
 def list_statements(page: int = 1, page_size: int = 20, account_id: Optional[int] = None, status: Optional[str] = None):
     """List parsed statements/bills with pagination."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -1212,7 +1378,7 @@ def list_statements(page: int = 1, page_size: int = 20, account_id: Optional[int
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/statements/upload")
+@router.post("/statements/upload", summary="上传账单文件")
 async def upload_statement(file: UploadFile = File(...), account_id: Optional[str] = None):
     """Upload a statement file."""
     try:
@@ -1236,7 +1402,7 @@ async def upload_statement(file: UploadFile = File(...), account_id: Optional[st
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/statements/{statement_id}/parse")
+@router.post("/statements/{statement_id}/parse", summary="解析账单")
 def parse_statement(statement_id: int):
     """Parse an uploaded statement file."""
     from tzdata_pkg.maintenance.statements.parsers.cfmmc_parser import CFMMCParser
@@ -1270,7 +1436,7 @@ def parse_statement(statement_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/statements/{statement_id}")
+@router.delete("/statements/{statement_id}", summary="删除账单")
 def delete_statement(statement_id: int):
     """Delete a statement record and its file."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -1292,7 +1458,7 @@ def delete_statement(statement_id: int):
 
 # === Bill Balance Verification ===
 
-@router.post("/statements/verify-balance")
+@router.post("/statements/verify-balance", summary="余额校验")
 def verify_bill_balance(request: dict):
     """Verify bill statement balance consistency (试算平衡)."""
     from tzdata_pkg.maintenance.statements.bill_balance_verifier import BillBalanceVerifier
@@ -1315,7 +1481,7 @@ def verify_bill_balance(request: dict):
 
 # === Bill-Market Reconciliation ===
 
-@router.post("/statements/reconcile")
+@router.post("/statements/reconcile", summary="滑点对账")
 def reconcile_bill_trades(request: dict):
     """Reconcile bill trades against market quotes (滑点分析)."""
     from tzdata_pkg.maintenance.statements.bill_reconciler import BillMarketReconciler
@@ -1331,7 +1497,7 @@ def reconcile_bill_trades(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/statements/reconcile/{account_id}")
+@router.get("/statements/reconcile/{account_id}", summary="对账结果")
 def reconcile_from_db(
     account_id: int,
     start_date: str,
@@ -1354,7 +1520,7 @@ def reconcile_from_db(
 
 # === Credential Management ===
 
-@router.post("/credentials")
+@router.post("/credentials", summary="创建CFMMC凭证")
 def save_credential(request: dict):
     """Save encrypted CFMMC credentials for an account."""
     from tzdata_pkg.maintenance.statements.credential_vault import CredentialVault
@@ -1372,7 +1538,7 @@ def save_credential(request: dict):
 
 # === Sync Status Endpoint ===
 
-@router.get("/sync/status")
+@router.get("/sync/status", summary="同步状态")
 def get_sync_status():
     """Get current sync concurrency and rate limit status."""
     from tzdata_pkg.maintenance.sync.concurrency_controller import ConcurrencyController
@@ -1385,7 +1551,7 @@ def get_sync_status():
 
 # === System Config (API tokens, shared settings) ===
 
-@router.get("/system-config")
+@router.get("/system-config", summary="系统配置列表")
 def list_system_config():
     """List all system configuration entries."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -1412,7 +1578,7 @@ def list_system_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/system-config/{config_key}")
+@router.get("/system-config/{config_key}", summary="配置项详情")
 def get_system_config(config_key: str):
     """Get a specific config value."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -1439,7 +1605,7 @@ def get_system_config(config_key: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/schedule")
+@router.get("/schedule", summary="Celery调度任务列表")
 def list_schedule():
     """List all Celery Beat scheduled tasks."""
     from tzdata_pkg.scheduler.celery_app import celery_app
@@ -1463,7 +1629,7 @@ def list_schedule():
     }
 
 
-@router.put("/system-config")
+@router.put("/system-config", summary="更新系统配置")
 def upsert_system_config(request: SystemConfigRequest):
     """Create or update a system config entry."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -1479,12 +1645,14 @@ def upsert_system_config(request: SystemConfigRequest):
                     description = excluded.description,
                     updated_at = CURRENT_TIMESTAMP
             """, (request.key, request.value, request.config_type, request.description))
+        from tzdata_pkg.config import invalidate_config_cache
+        invalidate_config_cache(request.key)
         return {"success": True, "message": f"Config '{request.key}' saved"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/system-config/{config_key}")
+@router.delete("/system-config/{config_key}", summary="删除系统配置")
 def delete_system_config(config_key: str):
     """Delete a system config entry."""
     from tzdata_pkg.storage.db_registry import DBRegistry
@@ -1492,6 +1660,609 @@ def delete_system_config(config_key: str):
         pool = DBRegistry().get_pool('market')
         with pool.transaction() as conn:
             conn.execute("DELETE FROM system_config WHERE config_key = ?", (config_key,))
+        from tzdata_pkg.config import invalidate_config_cache
+        invalidate_config_cache(config_key)
         return {"success": True, "message": f"Config '{config_key}' deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/notification/test", summary="测试通知")
+def test_notification():
+    """Send a test DingTalk notification to verify webhook configuration."""
+    from tzdata_pkg.config import _get_system_config_value
+    import os
+
+    webhook_url = _get_system_config_value("dingtalk.webhook") or os.getenv("DINGTALK_WEBHOOK_URL", "")
+    if not webhook_url:
+        raise HTTPException(status_code=400, detail="钉钉 Webhook 未配置，请先在系统配置中设置 dingtalk.webhook")
+
+    try:
+        import requests
+        payload = {
+            "msgtype": "markdown",
+            "markdown": {
+                "title": "测试通知",
+                "text": "## 测试通知\n\n**级别**: info\n\n**时间**: 现在\n\n**详情**: 这是一条来自 tz-data 系统的测试通知消息。",
+            },
+        }
+        resp = requests.post(webhook_url, json=payload, timeout=10)
+        result = resp.json()
+        if result.get("errcode") == 0:
+            return {"success": True, "message": "测试通知发送成功"}
+        else:
+            raise HTTPException(status_code=502, detail=f"钉钉返回: {result}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"发送失败: {e}")
+
+
+@router.post("/notification/test-wechat", summary="测试企业微信通知")
+def test_wechat_notification():
+    """Send a test WeChat Work notification to verify webhook configuration."""
+    from tzdata_pkg.config import _get_system_config_value
+    import os
+
+    webhook_url = _get_system_config_value("wechat.webhook") or os.getenv("WECHAT_WEBHOOK_URL", "")
+    if not webhook_url:
+        raise HTTPException(status_code=400, detail="企业微信 Webhook 未配置，请先在系统配置中设置 wechat.webhook")
+
+    try:
+        import requests
+        payload = {
+            "msgtype": "text",
+            "text": {
+                "content": "[tz-data 测试通知]\n\n这是一条来自 tz-data 系统的测试通知消息。\n时间：现在\n级别：info"
+            },
+        }
+        resp = requests.post(webhook_url, json=payload, timeout=10)
+        result = resp.json()
+        if result.get("errcode") == 0:
+            return {"success": True, "message": "企业微信测试通知发送成功"}
+        else:
+            raise HTTPException(status_code=502, detail=f"企业微信返回: {result}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"发送失败: {e}")
+
+
+# === Data Dashboard ===
+
+# Table descriptions for business context
+_TABLE_DESCRIPTIONS: dict[str, str] = {
+    # market DB
+    "contracts": "合约主表",
+    "daily_quotes": "日线行情数据",
+    "minute_quotes": "分钟线行情数据",
+    "settlement_prices": "结算价数据",
+    "position_detail": "持仓明细（Top20）",
+    "download_log": "下载日志",
+    "download_progress": "下载进度",
+    "download_failures": "下载失败记录",
+    "file_checksums": "文件校验和",
+    "data_quality_checks": "数据质量检查",
+    "exchange_config": "交易所配置",
+    "product_config": "品种配置",
+    "contract_info": "合约信息（维护系统）",
+    "trade_calendar": "交易日历",
+    "special_date_override": "特殊日期覆盖",
+    "product_listing_dates": "品种上市日期",
+    "data_catalog": "数据目录",
+    "data_status_local": "本地数据状态",
+    "data_status_remote": "远程数据状态",
+    "sync_task": "同步任务记录",
+    "data_health_snapshot": "数据健康快照",
+    "data_diff_log": "数据差异对比",
+    "main_contract_map": "主力合约映射",
+    "trading_hours_template": "交易时间模板",
+    "product_trading_hours": "品种交易时间",
+    "system_config": "系统配置",
+    "sync_audit_log": "同步审计日志",
+    # trading DB
+    "bills": "账单记录",
+    "bill_raw_sections": "账单原始段落",
+    "trades": "交易记录",
+    "matched_trades": "匹配后的开平仓交易",
+    "trade_performance": "交易绩效分析",
+    "positions_summary": "持仓汇总",
+    "account_summary": "账户概览",
+    "account_cashflow": "账户现金流",
+    "trade_comparison_analysis": "交易对比分析",
+    "cffex_daily_settlement": "中金所日结算",
+    "strategies": "策略配置",
+    "strategy_performance_summary": "策略绩效汇总",
+    "strategy_summary": "策略日报",
+    "backtest_results": "回测结果",
+    "option_sim_strategies": "期权模拟策略",
+    "option_sim_trades": "期权模拟交易",
+    "option_sim_iv_series": "期权模拟 IV 序列",
+    "paper_accounts": "模拟账户",
+    "paper_position": "模拟持仓",
+    "paper_trade": "模拟交易",
+    "paper_order": "模拟订单",
+    "reports": "报告",
+    "report_templates": "报告模板",
+    "risk_config": "风控配置",
+    "risk_history": "风控历史",
+    "futures_accounts": "期货账户配置",
+    "statement_status": "账单状态",
+    "bill_fund_flows": "账单资金流水",
+    "option_greeks_daily": "期权希腊字母（日频）",
+    "daily_index_prices": "指数日线数据",
+    "contract_expiry": "合约到期信息",
+    "mo_contract_master": "MO 合约主表",
+    # analysis DB
+    "institution_master": "机构会员主表",
+    "institution_name_mapping": "机构名称映射",
+    "institution_profiles": "机构画像",
+    "institution_daily_features": "机构日频特征",
+    "feature_daily": "市场日频特征汇总",
+    "cffex_holdings_continuous": "中金所持仓连续序列",
+    "option_features": "期权特征（Greeks）",
+    "trading_signals": "交易信号",
+    "signal_triggers": "信号触发记录",
+    "market_regime": "市场状态分类",
+    "institution_lead_lag": "机构领先滞后分析",
+    "model_validation_records": "模型验证记录",
+    "tushare_daily": "Tushare 日线",
+    "tushare_minute": "Tushare 分钟线",
+    "tushare_option": "Tushare 期权",
+    "task_execution_log": "任务执行日志",
+    "analysis_cache": "分析缓存",
+}
+
+# Date column names to try for each table (for time range detection)
+_DATE_COLUMNS: dict[str, list[str]] = {
+    "daily_quotes": ["trade_date"],
+    "minute_quotes": ["trade_date"],
+    "settlement_prices": ["trade_date"],
+    "position_detail": ["trade_date"],
+    "trade_calendar": ["trade_date"],
+    "data_health_snapshot": ["snapshot_date"],
+    "data_diff_log": ["trade_date"],
+    "main_contract_map": ["trade_date"],
+    "bills": ["bill_date_start", "bill_date_end"],
+    "bill_fund_flows": ["trade_date"],
+    "trades": ["trade_date"],
+    "matched_trades": ["open_date", "close_date"],
+    "trade_performance": ["open_date", "close_date"],
+    "positions_summary": ["trade_date"],
+    "account_summary": ["start_date", "end_date"],
+    "trade_comparison_analysis": ["analysis_date", "open_date"],
+    "cffex_daily_settlement": ["trade_date"],
+    "strategy_summary": ["date"],
+    "backtest_results": ["start_date", "end_date"],
+    "option_sim_trades": ["entry_date", "exit_date"],
+    "option_sim_iv_series": ["trade_date"],
+    "paper_trade": ["trade_date"],
+    "option_greeks_daily": ["trade_date"],
+    "daily_index_prices": ["trade_date"],
+    "statement_status": ["statement_date"],
+    "institution_daily_features": ["trade_date"],
+    "feature_daily": ["trade_date"],
+    "cffex_holdings_continuous": ["trade_date"],
+    "option_features": ["trade_date"],
+    "trading_signals": ["signal_date"],
+    "signal_triggers": ["trigger_date"],
+    "market_regime": ["trade_date"],
+    "institution_lead_lag": ["trade_date"],
+    "model_validation_records": ["validation_date"],
+    "tushare_daily": ["trade_date"],
+    "tushare_minute": ["trade_date"],
+    "tushare_option": ["trade_date"],
+    "sync_audit_log": ["trade_date", "start_time"],
+    "task_execution_log": ["start_time"],
+}
+
+
+def _normalize_date(raw: str) -> str | None:
+    """Normalize a date string to YYYY-MM-DD. Returns None for non-date values."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    # YYYYMMDD -> YYYY-MM-DD
+    if len(s) == 8 and s.isdigit() and s.startswith(("19", "20")):
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    # YYYY-MM-DD (already correct)
+    if len(s) >= 10 and s[0:4].isdigit() and s[4] == "-" and s[5:7].isdigit() and s[7] == "-" and s[8:10].isdigit():
+        return s[:10]
+    # Not a valid date (e.g. 'MOOSE', 'IF', 'IH')
+    return None
+
+
+def _get_table_stats(conn, table_name: str) -> dict:
+    """Get row count and date range for a table."""
+    result: dict = {"name": table_name, "rows": 0, "cols": 0, "earliest_date": None, "latest_date": None}
+
+    try:
+        row = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+        result["rows"] = row[0] if row else 0
+
+        cols = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        result["cols"] = len(cols)
+
+        date_cols = _DATE_COLUMNS.get(table_name, [])
+        if not date_cols:
+            col_names = [c[1] for c in cols]
+            for candidate in ["trade_date", "date", "created_at", "snapshot_date", "start_date", "end_time"]:
+                if candidate in col_names:
+                    date_cols = [candidate]
+                    break
+
+        for dc in date_cols:
+            if dc in [c[1] for c in cols]:
+                # Filter out non-date values (e.g. 'MOOSE', 'IF', 'IH') by requiring 4-digit year prefix
+                dr = conn.execute(
+                    f"SELECT MIN({dc}), MAX({dc}) FROM {table_name} WHERE {dc} LIKE '19%' OR {dc} LIKE '20%'"
+                ).fetchone()
+                if dr and dr[0]:
+                    min_d = _normalize_date(dr[0])
+                    max_d = _normalize_date(dr[1])
+                    if min_d:
+                        result["earliest_date"] = min_d
+                    if max_d:
+                        result["latest_date"] = max_d
+                    break
+    except Exception:
+        pass
+
+    return result
+
+
+def _get_db_tables(db_path: str) -> list[dict]:
+    """Get all tables with stats from a SQLite database."""
+    import sqlite3
+
+    if not os.path.exists(db_path):
+        return []
+
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+
+        results = []
+        for (table_name,) in tables:
+            stats = _get_table_stats(conn, table_name)
+            stats["description"] = _TABLE_DESCRIPTIONS.get(table_name, "")
+            stats["source"] = _infer_source(table_name)
+            results.append(stats)
+        return results
+    finally:
+        conn.close()
+
+
+def _infer_source(table_name: str) -> str:
+    """Infer data source from table name."""
+    if table_name.startswith("tushare"):
+        return "tushare"
+    if "cffex" in table_name:
+        return "cffex"
+    if "shfe" in table_name:
+        return "shfe"
+    if "bill" in table_name or "statement" in table_name:
+        return "cfmmc"
+    if "akshare" in table_name:
+        return "akshare"
+    return "exchange"
+
+
+@router.get("/dashboard", summary="数据大盘")
+def get_dashboard():
+    """获取本地数据大盘：库表结构、数据量、业务指标、消费情况。"""
+    from tzdata_pkg.cache.cache_service import analysis_cache
+
+    cache_key = "dashboard:get_dashboard"
+    cached = analysis_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    from pathlib import Path
+    from tzdata_pkg.config import DATA_DIR, TZDATA_MARKET_DB, TZDATA_TRADING_DB, TZDATA_ANALYSIS_DB
+    from tzdata_pkg.maintenance.metadata.catalog_manager import CatalogManager
+    from tzdata_pkg.maintenance.monitoring.health_snapshot import HealthSnapshotGenerator
+    from tzdata_pkg.storage.db_registry import DBRegistry
+
+    result: dict = {"databases": [], "catalogs": [], "tasks": [], "consumption": [], "summary": {}}
+
+    # 1. Database table stats
+    db_configs = [
+        {"name": "tzdata_market.db", "path": str(TZDATA_MARKET_DB)},
+        {"name": "tzdata_trading.db", "path": str(TZDATA_TRADING_DB)},
+        {"name": "tzdata_analysis.db", "path": str(TZDATA_ANALYSIS_DB)},
+    ]
+
+    total_tables = 0
+    total_records = 0
+
+    for db_cfg in db_configs:
+        db_path = db_cfg["path"]
+        tables = _get_db_tables(db_path)
+        db_size = os.path.getsize(db_path) / (1024 * 1024) if os.path.exists(db_path) else 0
+        db_records = sum(t["rows"] for t in tables)
+
+        result["databases"].append({
+            "name": db_cfg["name"],
+            "path": db_path,
+            "size_mb": round(db_size, 2),
+            "tables": tables,
+        })
+        total_tables += len(tables)
+        total_records += db_records
+
+    # 2. Catalogs with status
+    try:
+        catalogs = CatalogManager.get_enabled_catalogs()
+        for cat in catalogs:
+            cat_info = {
+                "id": cat.get("id"),
+                "name": cat.get("catalog_name", ""),
+                "exchange": cat.get("exchange_code", ""),
+                "product": cat.get("product_code", ""),
+                "data_type": cat.get("data_type", ""),
+                "source": cat.get("data_source", ""),
+                "enabled": bool(cat.get("is_enabled", 1)),
+                "last_sync_at": _normalize_date(cat.get("last_sync_at", "")) or "",
+            }
+            snapshot = HealthSnapshotGenerator.get_latest_snapshot(cat["id"])
+            if snapshot:
+                cat_info["quality_score"] = snapshot.get("data_quality_score", 0)
+                cat_info["completeness_pct"] = snapshot.get("completeness_pct", 0)
+                cat_info["sync_status"] = snapshot.get("last_sync_status", "unknown")
+                cat_info["missing_days"] = snapshot.get("missing_days", 0)
+
+            # Enrich with data_status_local info
+            try:
+                pool = DBRegistry().get_pool("market")
+                with pool.connection() as conn:
+                    row = conn.execute(
+                        "SELECT earliest_date, latest_date, total_records FROM data_status_local WHERE catalog_id = ?",
+                        (cat["id"],),
+                    ).fetchone()
+                    if row:
+                        cat_info["earliest_date"] = _normalize_date(row[0]) or ""
+                        cat_info["latest_date"] = _normalize_date(row[1]) or ""
+                        cat_info["total_records"] = row[2] or 0
+                        has_data = row[2] and row[2] > 0
+                        # Override unknown/missing sync status when actual data exists
+                        if cat_info.get("sync_status") in ("unknown", "never_synced") and has_data:
+                            cat_info["sync_status"] = "completed"
+                        # Initialize missing metrics with sensible defaults when no snapshot
+                        if "quality_score" not in cat_info:
+                            cat_info["quality_score"] = 50.0 if has_data else 0.0
+                        if "completeness_pct" not in cat_info:
+                            cat_info["completeness_pct"] = 0.0
+                        if "missing_days" not in cat_info:
+                            cat_info["missing_days"] = 0
+                        if "sync_status" not in cat_info:
+                            cat_info["sync_status"] = "completed" if has_data else "unknown"
+            except Exception:
+                pass
+
+            # Ensure all fields have defaults
+            cat_info.setdefault("quality_score", 0.0)
+            cat_info.setdefault("completeness_pct", 0.0)
+            cat_info.setdefault("missing_days", 0)
+            cat_info.setdefault("sync_status", "unknown")
+            cat_info.setdefault("earliest_date", "")
+            cat_info.setdefault("latest_date", "")
+            cat_info.setdefault("total_records", 0)
+
+            result["catalogs"].append(cat_info)
+    except Exception as e:
+        logger.warning(f"Dashboard catalog enrichment failed: {e}")
+
+    # 3. Scheduled tasks from Celery Beat
+    try:
+        from tzdata_pkg.scheduler.celery_app import celery_app
+
+        beat_schedule = celery_app.conf.get("beat_schedule", {})
+        task_names = {
+            "mo-minute-sync": "MO 分钟数据同步",
+            "mo-iv-sync": "MO IV 数据同步",
+            "mo-underlying-sync": "标的日线同步",
+            "mo-position-sync": "MO 持仓同步",
+            "ho-position-sync": "HO 持仓同步",
+            "io-position-sync": "IO 持仓同步",
+            "mo-market-env": "MO 市场环境分析",
+            "mo-quality-check": "MO 数据质量检查",
+            "mo-contract-sync": "MO 合约同步",
+            "daily-incremental-sync": "全量目录增量同步",
+            "daily-status-refresh": "数据状态刷新",
+            "daily-completeness-check": "数据完整性检查",
+            "daily-bill-missing-check": "账单缺失检测",
+            "daily-trade-matching": "交易开平匹配",
+            "daily-bill-calendar-check": "账单日历检查",
+            "sync-index-daily": "指数日线同步",
+            "compute-daily-vwap": "日频 VWAP 计算",
+            "compute-option-greeks": "期权希腊字母预计算",
+        }
+
+        schedule_display = {
+            "mo-minute-sync": "交易日 15:30",
+            "mo-iv-sync": "交易日 16:00",
+            "mo-underlying-sync": "交易日 16:30",
+            "mo-position-sync": "交易日 17:00",
+            "ho-position-sync": "交易日 17:05",
+            "io-position-sync": "交易日 17:10",
+            "mo-market-env": "交易日 17:30",
+            "mo-quality-check": "每日 18:00",
+            "mo-contract-sync": "周六 10:00",
+            "daily-incremental-sync": "每日 18:00",
+            "daily-status-refresh": "每日 18:30",
+            "daily-completeness-check": "每日 19:00",
+            "daily-bill-missing-check": "每日 20:00",
+            "daily-trade-matching": "每日 20:30",
+            "daily-bill-calendar-check": "交易日 21:00",
+            "sync-index-daily": "交易日 18:30",
+            "compute-daily-vwap": "交易日 18:35",
+            "compute-option-greeks": "每日 20:00",
+        }
+
+        # Get recent task execution from sync_audit_log
+        audit_data: dict = {}
+        try:
+            pool = DBRegistry().get_pool("market")
+            with pool.connection() as conn:
+                rows = conn.execute("""
+                    SELECT task_name, success, records_fetched, end_time
+                    FROM sync_audit_log
+                    WHERE end_time IS NOT NULL
+                    ORDER BY end_time DESC
+                """).fetchall()
+                for task_name, success, records, end_time in rows:
+                    if task_name not in audit_data:
+                        audit_data[task_name] = {
+                            "last_run": str(end_time)[:19],
+                            "last_status": "success" if success else "failed",
+                            "last_records": records,
+                        }
+        except Exception:
+            pass
+
+        for task_key, task_cfg in beat_schedule.items():
+            display_name = task_names.get(task_key, task_key)
+            schedule_str = schedule_display.get(task_key, "")
+            audit = audit_data.get(task_key, {})
+
+            result["tasks"].append({
+                "key": task_key,
+                "name": display_name,
+                "schedule": schedule_str,
+                "last_run": audit.get("last_run", ""),
+                "last_status": audit.get("last_status", ""),
+                "last_records": audit.get("last_records", 0),
+            })
+    except Exception as e:
+        logger.warning(f"Dashboard task enrichment failed: {e}")
+
+    # 4. Data consumption mapping
+    result["consumption"] = [
+        {"data_type": "日线行情", "tables": "daily_quotes", "api_endpoint": "/api/v1/market/quotes", "consumers": "tz2.0 工作台、前端 K 线"},
+        {"data_type": "分钟行情", "tables": "minute_quotes", "api_endpoint": "/api/v1/market/quotes", "consumers": "tz2.0 分钟 K 线、VWAP 计算"},
+        {"data_type": "持仓排名", "tables": "position_detail", "api_endpoint": "/api/v1/positions/{product}", "consumers": "tz2.0 持仓分析、机构特征"},
+        {"data_type": "账单数据", "tables": "bills, trades", "api_endpoint": "/api/v1/trades, /api/v1/bills", "consumers": "tz2.0 账单分析、交易绩效"},
+        {"data_type": "交易信号", "tables": "trading_signals", "api_endpoint": "/api/v1/signals", "consumers": "tz2.0 信号监控"},
+        {"data_type": "市场状态", "tables": "market_regime", "api_endpoint": "/api/v1/regime", "consumers": "tz2.0 策略过滤"},
+        {"data_type": "机构特征", "tables": "institution_daily_features", "api_endpoint": "/api/v1/institution-features", "consumers": "tz2.0 因子分析"},
+        {"data_type": "期权特征", "tables": "option_features", "api_endpoint": "/api/v1/option-features", "consumers": "tz2.0 期权策略"},
+        {"data_type": "IV 快照", "tables": "option_sim_iv_series", "api_endpoint": "/api/v1/iv-snapshot", "consumers": "tz2.0 波动率分析"},
+        {"data_type": "指数日线", "tables": "daily_index_prices", "api_endpoint": "/api/v1/market/index/{code}/daily", "consumers": "tz2.0 标的分析"},
+        {"data_type": "希腊字母", "tables": "option_greeks_daily", "api_endpoint": "/api/v1/options/greeks/{date}", "consumers": "tz2.0 期权风控"},
+    ]
+
+    # 5. Summary
+    catalogs_synced_today = 0
+    quality_scores = []
+    for cat in result["catalogs"]:
+        if cat.get("last_sync_at", "").startswith(str(datetime.now().date())):
+            catalogs_synced_today += 1
+        if cat.get("quality_score"):
+            quality_scores.append(cat["quality_score"])
+
+    tasks_today = 0
+    tasks_failed_today = 0
+    today_prefix = str(datetime.now().date())
+    for task in result["tasks"]:
+        if task.get("last_run", "").startswith(today_prefix):
+            tasks_today += 1
+            if task.get("last_status") == "failed":
+                tasks_failed_today += 1
+
+    result["summary"] = {
+        "total_tables": total_tables,
+        "total_records": total_records,
+        "total_catalogs": len(result["catalogs"]),
+        "catalogs_synced_today": catalogs_synced_today,
+        "avg_quality_score": round(sum(quality_scores) / len(quality_scores), 1) if quality_scores else 0,
+        "tasks_today": tasks_today,
+        "tasks_failed_today": tasks_failed_today,
+    }
+
+    analysis_cache.set(cache_key, result, ttl=300, tags=["dashboard"])
+    return result
+
+
+@router.get("/sync-failures", summary="同步失败记录")
+def get_sync_failures(hours: int = 24, limit: int = 50):
+    """Query recent sync task failures from task_failure_log."""
+    from tzdata_pkg.storage.db_registry import DBRegistry
+
+    pool = DBRegistry().get_pool('market')
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, task_name, task_id, error_type, error_message,
+                   failed_at, notified, retries
+            FROM task_failure_log
+            WHERE failed_at >= datetime('now', ?)
+            ORDER BY failed_at DESC
+            LIMIT ?
+            """,
+            (f'-{hours} hours', limit),
+        ).fetchall()
+
+    return {
+        'success': True,
+        'data': [
+            {
+                'id': r[0],
+                'task_name': r[1],
+                'task_id': r[2],
+                'error_type': r[3],
+                'error_message': r[4],
+                'failed_at': r[5],
+                'notified': bool(r[6]),
+                'retries': r[7],
+            }
+            for r in rows
+        ],
+        'summary': {
+            'total_failures': len(rows),
+            'window_hours': hours,
+        }
+    }
+
+
+@router.get("/sync-failures/stats", summary="同步失败统计")
+def get_sync_failure_stats(hours: int = 24):
+    """Sync failure statistics: count by task, error type."""
+    from tzdata_pkg.storage.db_registry import DBRegistry
+
+    pool = DBRegistry().get_pool('market')
+    with pool.connection() as conn:
+        by_task = conn.execute(
+            """
+            SELECT task_name, COUNT(*) as cnt, MAX(failed_at) as last_failure
+            FROM task_failure_log
+            WHERE failed_at >= datetime('now', ?)
+            GROUP BY task_name
+            ORDER BY cnt DESC
+            """,
+            (f'-{hours} hours',),
+        ).fetchall()
+
+        by_error = conn.execute(
+            """
+            SELECT error_type, COUNT(*) as cnt
+            FROM task_failure_log
+            WHERE failed_at >= datetime('now', ?)
+            GROUP BY error_type
+            ORDER BY cnt DESC
+            """,
+            (f'-{hours} hours',),
+        ).fetchall()
+
+    return {
+        'success': True,
+        'data': {
+            'by_task': [{'task_name': r[0], 'count': r[1], 'last_failure': r[2]} for r in by_task],
+            'by_error': [{'error_type': r[0], 'count': r[1]} for r in by_error],
+            'total': sum(r[1] for r in by_task),
+            'window_hours': hours,
+        }
+    }
+

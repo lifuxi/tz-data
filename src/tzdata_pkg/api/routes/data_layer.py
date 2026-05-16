@@ -31,7 +31,7 @@ def get_db() -> sqlite3.Connection:
         raise HTTPException(status_code=503, detail=f"Database connection failed: {e}")
 
 
-@router.get("/bills/{bill_id}/fund-flows")
+@router.get("/bills/{bill_id}/fund-flows", summary="账单资金流水", description="查询指定账单的资金流水记录，支持按日期和类型过滤")
 def get_bill_fund_flows(
     bill_id: int,
     start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
@@ -73,7 +73,7 @@ def get_bill_fund_flows(
         conn.close()
 
 
-@router.get("/market/index/{code}/daily")
+@router.get("/market/index/{code}/daily", summary="指数日线", description="查询指数日线数据（如 000852 中证1000、000300 沪深300）")
 def get_index_daily(
     code: str,
     start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD"),
@@ -115,7 +115,7 @@ def get_index_daily(
         conn.close()
 
 
-@router.get("/options/greeks/{date}")
+@router.get("/options/greeks/{date}", summary="期权 Greeks", description="查询指定日期的期权希腊字母数据（Delta/Gamma/Vega/Theta）")
 def get_option_greeks(
     date: str,
     symbol: Optional[str] = Query(None, description="Filter by option symbol"),
@@ -149,7 +149,7 @@ def get_option_greeks(
         conn.close()
 
 
-@router.get("/contracts/{symbol}/expiry")
+@router.get("/contracts/{symbol}/expiry", summary="合约到期信息", description="查询指定合约的到期日期和状态信息")
 def get_contract_expiry(symbol: str):
     """获取合约到期信息。"""
     conn = get_db()

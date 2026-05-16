@@ -150,20 +150,60 @@ class MarketStore:
                 conn.execute("""
                     INSERT INTO daily_quotes
                         (exchange, contract_code, trade_date, open, high, low, close,
-                         settle, prev_settle, volume, turnover, open_interest)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         settle, prev_settle, volume, turnover, open_interest,
+                         daily_change, daily_change_pct, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(exchange, contract_code, trade_date)
                     DO UPDATE SET
                         open=excluded.open, high=excluded.high, low=excluded.low,
                         close=excluded.close, settle=excluded.settle,
                         volume=excluded.volume, turnover=excluded.turnover,
-                        open_interest=excluded.open_interest
+                        open_interest=excluded.open_interest,
+                        daily_change=excluded.daily_change,
+                        daily_change_pct=excluded.daily_change_pct,
+                        source=excluded.source
                 """, (
-                    r["exchange"], r["contract_code"], r["trade_date"],
+                    r.get("exchange", ""), r.get("contract_code", ""), r.get("trade_date", ""),
                     r.get("open"), r.get("high"), r.get("low"), r.get("close"),
                     r.get("settle"), r.get("prev_settle"),
                     r.get("volume", 0), r.get("turnover", 0),
                     r.get("open_interest", 0),
+                    r.get("daily_change"), r.get("daily_change_pct"),
+                    r.get("source", "exchange"),
+                ))
+                count += 1
+        return count
+
+    def save_positions(self, rows: list[dict]) -> int:
+        """Insert position ranking data, replacing existing for same date/contract. Returns count."""
+        if not rows:
+            return 0
+        pool = self.registry.get_pool("market")
+        count = 0
+        with pool.transaction() as conn:
+            # Group by exchange+trade_date+contract to batch-delete first
+            keys = set()
+            for r in rows:
+                keys.add((r.get("exchange", ""), r.get("trade_date", ""), r.get("contract_code", "")))
+            for exchange, trade_date, contract in keys:
+                conn.execute(
+                    "DELETE FROM position_detail WHERE exchange=? AND trade_date=? AND contract_code=?",
+                    (exchange, trade_date, contract)
+                )
+            for r in rows:
+                conn.execute("""
+                    INSERT INTO position_detail
+                        (exchange, trade_date, contract_code, product,
+                         member_name, rank, long_volume, short_volume,
+                         long_change, short_change, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    r.get("exchange", ""), r.get("trade_date", ""),
+                    r.get("contract_code", ""), r.get("product", ""),
+                    r.get("member_name", ""), r.get("rank", 0),
+                    r.get("long_volume", 0), r.get("short_volume", 0),
+                    r.get("long_change", 0), r.get("short_change", 0),
+                    r.get("source", "exchange"),
                 ))
                 count += 1
         return count

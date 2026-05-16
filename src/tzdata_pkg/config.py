@@ -5,6 +5,7 @@ All paths are derived from TZ_DATA_DIR environment variable.
 """
 
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Any
 
@@ -25,6 +26,15 @@ def _get_system_config_value(key: str) -> str:
         return row[0] if row else ""
     except Exception:
         return ""
+
+
+# Wrap with lru_cache after the function is defined
+_get_system_config_value = lru_cache(maxsize=64)(_get_system_config_value)
+
+
+def invalidate_config_cache(key: str | None = None) -> None:
+    """Clear config cache. If key is None, clear all."""
+    _get_system_config_value.cache_clear()
 
 
 def _set_system_config_value(key: str, value: str, config_type: str = "text", description: str = "") -> bool:

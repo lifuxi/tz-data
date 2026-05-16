@@ -196,6 +196,9 @@ class SyncEngine:
                     date.today()
                 )
 
+                # Step 7: Reconcile data_status_local with actual table COUNT(*)
+                self._reconcile_total_records()
+
                 # Final result
                 result = SyncResult(
                     success=True,
@@ -265,7 +268,13 @@ class SyncEngine:
             """, (self.catalog_id,))
             
             row = cursor.fetchone()
-            local_latest = row[0] if row else None
+            local_latest_raw = row[0] if row else None
+
+        # Convert string to date if needed
+        if local_latest_raw and isinstance(local_latest_raw, str):
+            local_latest = date.fromisoformat(local_latest_raw)
+        else:
+            local_latest = local_latest_raw
         
         # Get remote latest date from source
         contract_code = self.catalog.get('contract_code', '')
@@ -391,7 +400,7 @@ class SyncEngine:
             return self._fetch_daily_batch(batch, contract_code)
         elif data_type == 'minute':
             return self._fetch_minute_batch(batch, contract_code)
-        elif data_type == 'top20_holdings':
+        elif data_type in ('top20_holdings', 'position'):
             return self._fetch_holdings_batch(batch, contract_code)
         else:
             raise ValueError(f"Unsupported data type: {data_type}")
@@ -403,28 +412,43 @@ class SyncEngine:
     ) -> int:
         """Fetch daily quotes for a batch."""
         from tzdata_pkg.storage.questdb_store import QuestDBStore
-        
+        from tzdata_pkg.storage.market_store import MarketStore
+
+        # Use product_code as fallback when contract_code is empty
+        effective_code = contract_code or self.catalog.get('product_code', '')
+
         data = self.source.fetch_daily_quotes(
-            contract_code,
+            effective_code,
             batch.start_date,
             batch.end_date
         )
-        
+
         if not data:
             return 0
-        
-        # Store in QuestDB
+
+        # Store in SQLite (primary)
         exchange = self.catalog.get('exchange_code', '')
         product_code = self.catalog.get('product_code', '')
-        
-        inserted = QuestDBStore.insert_daily_quotes(
-            exchange=exchange,
-            contract_code=contract_code,
-            product_code=product_code,
-            quotes=data
-        )
-        
-        # Update metadata status
+
+        inserted = 0
+        try:
+            store = MarketStore(DBRegistry())
+            inserted = store.save_quotes(data)
+        except Exception as e:
+            logger.error(f"SQLite quote insert failed: {e}")
+
+        # Also store in QuestDB (secondary, if available)
+        try:
+            QuestDBStore.insert_daily_quotes(
+                exchange=exchange,
+                contract_code=effective_code,
+                product_code=product_code,
+                quotes=data
+            )
+        except Exception:
+            pass
+
+        # Update date range metadata (total_records is reconcised post-sync)
         if inserted > 0:
             latest_date = max(
                 date.fromisoformat(q['trade_date']) if '-' in q['trade_date']
@@ -434,10 +458,12 @@ class SyncEngine:
             QuestDBStore.update_data_status_local(
                 catalog_id=self.catalog_id,
                 latest_date=latest_date,
-                earliest_date=batch.start_date,
-                total_records=inserted
+                earliest_date=batch.start_date
             )
-        
+
+        # Per-batch update is skipped here to avoid overwriting cumulative total;
+        # the execute() method updates data_status_local with COUNT(*) after all batches complete.
+
         return inserted
     
     def _fetch_minute_batch(
@@ -452,12 +478,15 @@ class SyncEngine:
         total_records = 0
         exchange = self.catalog.get('exchange_code', '')
         product_code = self.catalog.get('product_code', '')
-        
+
+        # Use product_code as fallback when contract_code is empty
+        effective_code = contract_code or product_code
+
         # Fetch minute data day by day
         current = batch.start_date
         while current <= batch.end_date:
             data = self.source.fetch_minute_quotes(
-                contract_code,
+                effective_code,
                 current,
                 frequency
             )
@@ -492,37 +521,156 @@ class SyncEngine:
     ) -> int:
         """Fetch top 20 holdings for a batch."""
         from tzdata_pkg.storage.questdb_store import QuestDBStore
-        
+        from tzdata_pkg.storage.db_registry import DBRegistry
+        from tzdata_pkg.storage.market_store import MarketStore
+
         total_records = 0
         exchange = self.catalog.get('exchange_code', '')
         product_code = self.catalog.get('product_code', '')
-        
+
+        # Use product_code as fallback when contract_code is empty
+        effective_code = contract_code or product_code
+
         # Fetch holdings day by day
         current = batch.start_date
         while current <= batch.end_date:
             data = self.source.fetch_top20_holdings(
-                contract_code,
+                effective_code,
                 current
             )
-            
+
             if data:
-                inserted = QuestDBStore.insert_top20_holdings(
-                    exchange=exchange,
-                    contract_code=contract_code,
-                    product_code=product_code,
-                    holdings=data
-                )
+                # Source returns separate long/short rows; aggregate into one row per contract per rank
+                from collections import defaultdict
+                grouped = defaultdict(lambda: {
+                    'long_volume': 0, 'short_volume': 0,
+                    'long_change': 0, 'short_change': 0, 'member_name': ''
+                })
+                for d in data:
+                    key = (d['contract_code'], d['rank'])
+                    if d['side'] == 'long':
+                        grouped[key]['long_volume'] = d['volume']
+                        grouped[key]['long_change'] = d['volume_change']
+                        grouped[key]['member_name'] = d['member_name']
+                    else:
+                        grouped[key]['short_volume'] = d['volume']
+                        grouped[key]['short_change'] = d['volume_change']
+
+                # Store in SQLite (primary)
+                inserted = 0
+                try:
+                    store = MarketStore(DBRegistry())
+                    rows = []
+                    for (contract, rank), info in grouped.items():
+                        rows.append({
+                            'exchange': exchange,
+                            'trade_date': current.strftime('%Y%m%d'),
+                            'contract_code': contract,
+                            'product': product_code,
+                            'member_name': info['member_name'],
+                            'rank': rank,
+                            'long_volume': info['long_volume'],
+                            'short_volume': info['short_volume'],
+                            'long_change': info['long_change'],
+                            'short_change': info['short_change'],
+                            'source': 'exchange',
+                        })
+                    inserted = store.save_positions(rows)
+                except Exception as e:
+                    logger.error(f"SQLite position insert failed: {e}")
+
+                # Also store in QuestDB (secondary, if available)
+                try:
+                    QuestDBStore.insert_top20_holdings(
+                        exchange=exchange,
+                        contract_code=contract_code,
+                        product_code=product_code,
+                        holdings=data
+                    )
+                except Exception:
+                    pass
+
                 total_records += inserted
-            
+
             current += timedelta(days=1)
-        
+
         # Update metadata status
         if total_records > 0:
-            QuestDBStore.update_data_status_local(
-                catalog_id=self.catalog_id,
-                latest_date=batch.end_date,
-                earliest_date=batch.start_date,
-                total_records=total_records
-            )
-        
+            try:
+                QuestDBStore.update_data_status_local(
+                    catalog_id=self.catalog_id,
+                    latest_date=batch.end_date,
+                    earliest_date=batch.start_date,
+                    total_records=total_records
+                )
+            except Exception:
+                pass
+
         return total_records
+
+    def _reconcile_total_records(self):
+        """
+        Reconcile data_status_local.total_records with actual table COUNT(*).
+
+        This corrects the drift that can occur when per-batch updates overwrite
+        the cumulative total, or when INSERT OR REPLACE deduplicates rows.
+        """
+        from tzdata_pkg.storage.questdb_store import QuestDBStore
+        from tzdata_pkg.storage.db_registry import DBRegistry
+
+        registry = DBRegistry()
+        pool = registry.get_pool('market')
+        if not pool:
+            return
+
+        catalog = CatalogManager.get_catalog(self.catalog_id)
+        if not catalog:
+            return
+
+        data_type = catalog.get('data_type', '')
+        product_code = catalog.get('product_code', '')
+        contract_code = catalog.get('contract_code', '')
+        exchange = catalog.get('exchange_code', '')
+
+        # Query actual row count from the appropriate table
+        try:
+            with pool.transaction() as conn:
+                if data_type == 'daily':
+                    if contract_code:
+                        row = conn.execute(
+                            "SELECT COUNT(*) FROM daily_quotes WHERE exchange=? AND contract_code=?",
+                            (exchange, contract_code)
+                        ).fetchone()
+                    elif product_code:
+                        row = conn.execute(
+                            "SELECT COUNT(*) FROM daily_quotes WHERE exchange=? AND contract_code LIKE ?",
+                            (exchange, f'{product_code}%')
+                        ).fetchone()
+                    else:
+                        return
+                elif data_type in ('top20_holdings', 'position'):
+                    if contract_code:
+                        row = conn.execute(
+                            "SELECT COUNT(*) FROM position_detail WHERE exchange=? AND contract_code=?",
+                            (exchange, contract_code)
+                        ).fetchone()
+                    elif product_code:
+                        row = conn.execute(
+                            "SELECT COUNT(*) FROM position_detail WHERE exchange=? AND contract_code LIKE ?",
+                            (exchange, f'{product_code}%')
+                        ).fetchone()
+                    else:
+                        return
+                else:
+                    return
+
+                actual_count = row[0] if row else 0
+
+                QuestDBStore.reconcile_data_status_total(self.catalog_id, actual_count)
+
+                logger.info(
+                    f"Reconciled data_status_local for catalog {self.catalog_id}: "
+                    f"total_records={actual_count}"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to reconcile total records for catalog {self.catalog_id}: {e}")

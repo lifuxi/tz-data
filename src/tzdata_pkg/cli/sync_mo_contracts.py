@@ -135,7 +135,7 @@ def sync_option_contracts(product: str = 'MO', force: bool = False) -> dict:
             contract_code = _parse_contract_code(ts_code)
             call_put = row.get("call_put", "")
             option_type = _parse_option_type(call_put)
-            strike = row.get("strike_price")
+            strike = row.get("exercise_price")
             if strike is not None and pd.isna(strike):
                 strike = None
             else:
@@ -202,14 +202,123 @@ def sync_option_contracts(product: str = 'MO', force: bool = False) -> dict:
 
 
 def sync_mo_contracts(force: bool = False) -> dict:
-    """Backward-compatible wrapper. Syncs MO/HO/IO contracts."""
+    """Backward-compatible wrapper. Syncs MO/HO/IO contracts with single API call."""
+    from tzdata_pkg.config import get_tushare_config
+    from tzdata_pkg.download.tushare.client import TushareClient
+
+    tushare_cfg = get_tushare_config()
+    client = TushareClient(token=tushare_cfg["token"])
+
+    # Single API call — fetch all CFFEX options at once
+    logger.info("Fetching all CFFEX contracts from Tushare opt_basic (single call)...")
+    df = client.opt_basic(exchange="CFFEX")
+    if df is None or df.empty:
+        logger.warning("Tushare opt_basic returned no data")
+        return {"inserted": 0, "updated": 0, "total": 0}
+
     results = {}
     for product in PRODUCTS:
-        results[product] = sync_option_contracts(product=product, force=force)
+        ts_codes = df.get("ts_code", "")
+        if isinstance(ts_codes, pd.Series):
+            mask = ts_codes.str.startswith(product, na=False)
+            product_df = df[mask]
+        else:
+            product_df = df[:0]  # empty
+
+        results[product] = _sync_product(product, product_df, force)
+
     total_inserted = sum(r.get('inserted', 0) for r in results.values())
     total_updated = sum(r.get('updated', 0) for r in results.values())
     total_all = sum(r.get('total', 0) for r in results.values())
     return {"inserted": total_inserted, "updated": total_updated, "total": total_all, "details": results}
+
+
+def _sync_product(product: str, df, force: bool) -> dict:
+    """Sync contracts for a single product from a pre-fetched DataFrame."""
+    if df is None or df.empty:
+        logger.warning(f"Tushare opt_basic returned no data for {product}")
+        return {"inserted": 0, "updated": 0, "total": 0}
+
+    logger.info(f"Found {len(df)} {product} contracts from Tushare")
+    cfg = PRODUCTS[product]
+    conn = sqlite3.connect(str(TZDATA_TRADING_DB))
+    try:
+        _ensure_table(conn)
+
+        inserted = 0
+        updated = 0
+
+        for _, row in df.iterrows():
+            ts_code = str(row.get("ts_code", "")).strip()
+            if not ts_code:
+                continue
+
+            contract_code = _parse_contract_code(ts_code)
+            call_put = row.get("call_put", "")
+            option_type = _parse_option_type(call_put)
+            strike = row.get("exercise_price")
+            if strike is not None and pd.isna(strike):
+                strike = None
+            else:
+                strike = float(strike) if strike is not None else None
+
+            expiry_date = _normalize_date(row.get("delist_date") or row.get("exercise_date"))
+            list_date = _normalize_date(row.get("list_date"))
+            delist_date = _normalize_date(row.get("delist_date"))
+            last_trade_date = _normalize_date(row.get("last_trade_date"))
+            exercise_date = _normalize_date(row.get("exercise_date"))
+
+            existing = conn.execute(
+                "SELECT id, status FROM mo_contract_master WHERE ts_code = ?",
+                (ts_code,)
+            ).fetchone()
+
+            if existing and not force:
+                if delist_date and existing[1] == "active":
+                    conn.execute("""
+                        UPDATE mo_contract_master
+                        SET delist_date = ?, exercise_date = ?,
+                            status = 'delisted', updated_at = CURRENT_TIMESTAMP
+                        WHERE ts_code = ?
+                    """, (delist_date, exercise_date, ts_code))
+                    updated += 1
+                continue
+
+            if existing and force:
+                conn.execute("""
+                    UPDATE mo_contract_master
+                    SET contract_code = ?, underlying = ?, expiry_date = ?, strike_price = ?,
+                        option_type = ?, list_date = ?, delist_date = ?,
+                        last_trade_date = ?, exercise_date = ?,
+                        multiplier = ?, tick_size = ?,
+                        status = 'active', updated_at = CURRENT_TIMESTAMP
+                    WHERE ts_code = ?
+                """, (contract_code, product, expiry_date, strike, option_type,
+                      list_date, delist_date, last_trade_date, exercise_date,
+                      cfg["multiplier"], cfg["tick_size"], ts_code))
+                updated += 1
+            else:
+                conn.execute("""
+                    INSERT OR IGNORE INTO mo_contract_master
+                        (ts_code, contract_code, underlying, expiry_date, strike_price,
+                         option_type, list_date, delist_date, last_trade_date,
+                         exercise_date, multiplier, tick_size, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                """, (ts_code, contract_code, product, expiry_date, strike, option_type,
+                      list_date, delist_date, last_trade_date, exercise_date,
+                      cfg["multiplier"], cfg["tick_size"]))
+                if conn.total_changes > 0:
+                    inserted += 1
+
+        conn.commit()
+        logger.info(f"Synced {product} contracts: {inserted} inserted, {updated} updated, {len(df)} total")
+        return {"inserted": inserted, "updated": updated, "total": len(df)}
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to sync {product} contracts: {e}", exc_info=True)
+        raise
+    finally:
+        conn.close()
 
 
 def get_mo_contracts(active_only: bool = True, product: str = None) -> list[dict]:

@@ -5,6 +5,21 @@ echo.
 echo 正在启动 tz-data 项目...
 cd /d %~dp0
 
+REM 检查是否已有 Celery Beat 进程在运行（防止重复调度导致任务重复执行）
+tasklist /FI "WINDOWTITLE eq Celery Beat*" 2>NUL | find /I "Celery Beat" >NUL
+if not errorlevel 1 (
+    echo [警告] 检测到已有 Celery Beat 进程在运行，请先执行 stop.bat 停止旧服务
+    pause
+    exit /b 1
+)
+
+tasklist /FI "WINDOWTITLE eq Celery Worker*" 2>NUL | find /I "Celery Worker" >NUL
+if not errorlevel 1 (
+    echo [警告] 检测到已有 Celery Worker 进程在运行，请先执行 stop.bat 停止旧服务
+    pause
+    exit /b 1
+)
+
 set VENV_ACTIVATE=%~dp0.venv\Scripts\activate.bat
 set PYTHONPATH=%~dp0src
 

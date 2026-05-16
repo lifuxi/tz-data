@@ -312,7 +312,26 @@ class QuestDBStore:
             
             logger.debug(f"Updated data status for catalog {catalog_id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to update data status: {e}")
+            return False
+
+    @staticmethod
+    def reconcile_data_status_total(catalog_id: int, actual_count: int) -> bool:
+        """Reconcile data_status_local.total_records with actual COUNT(*), overwriting instead of accumulating."""
+        registry = DBRegistry()
+        pool = registry.get_pool('market')
+
+        try:
+            with pool.transaction() as conn:
+                conn.execute("""
+                    UPDATE data_status_local
+                    SET total_records = ?,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE catalog_id = ?
+                """, (actual_count, catalog_id))
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to reconcile data status for catalog {catalog_id}: {e}")
             return False

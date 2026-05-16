@@ -91,6 +91,18 @@ const routes = [
       },
       // ===== 系统 =====
       {
+        path: '/docs',
+        name: 'Docs',
+        component: () => import('@/views/DocsViewer.vue'),
+        meta: { title: '在线文档', icon: 'Reading', group: '系统', order: 5 }
+      },
+      {
+        path: '/data-dashboard',
+        name: 'DataDashboard',
+        component: () => import('@/views/DataDashboard.vue'),
+        meta: { title: '数据大盘', icon: 'DataAnalysis', group: '系统', order: 6 }
+      },
+      {
         path: '/data-sources',
         name: 'DataSources',
         component: () => import('@/views/DataSourceConfig.vue'),
@@ -101,6 +113,12 @@ const routes = [
         name: 'Alerts',
         component: () => import('@/views/AlertList.vue'),
         meta: { title: '告警历史', icon: 'Bell', group: '系统', order: 120 }
+      },
+      {
+        path: '/notification-config',
+        name: 'NotificationConfig',
+        component: () => import('@/views/NotificationConfig.vue'),
+        meta: { title: '通知配置', icon: 'ChatDotRound', group: '系统', order: 125 }
       }
     ]
   }

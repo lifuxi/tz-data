@@ -1,8 +1,10 @@
 """FastAPI application entry point."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from tzdata_pkg.api.routes.market import router as market_router
 from tzdata_pkg.api.routes.positions import router as positions_router
@@ -45,10 +47,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="tz-data API",
-    description="Unified market data management for Chinese futures/options",
-    version="0.3.0",
+    description="统一市场数据管理平台 — 中国期货/期权市场数据采集、存储、查询与分析。"
+                "提供 REST API（`/docs` 查看交互式文档）和 Python SDK（`tzdata_pkg.query`）。",
+    version="0.7.0",
     lifespan=lifespan,
 )
+
+# Mount docs directory for online documentation browsing
+docs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "docs")
+if os.path.isdir(docs_dir):
+    app.mount("/docs-api", StaticFiles(directory=docs_dir), name="docs")
 
 app.include_router(market_router, prefix="/api/v1/market", tags=["market"])
 app.include_router(positions_router, prefix="/api/v1/positions", tags=["positions"])

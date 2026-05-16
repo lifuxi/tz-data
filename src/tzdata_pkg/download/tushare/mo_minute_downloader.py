@@ -70,13 +70,49 @@ class MOMinuteDownloader:
             )
 
     def get_mo_contracts(self) -> List[Dict[str, Any]]:
-        """Get all MO option contracts from Tushare."""
+        """Get all MO option contracts from local master table (avoids Tushare rate limit)."""
+        import sqlite3
+        from tzdata_pkg.config import TZDATA_TRADING_DB
+
+        try:
+            conn = sqlite3.connect(str(TZDATA_TRADING_DB))
+            rows = conn.execute("""
+                SELECT ts_code, contract_code, underlying, expiry_date, strike_price,
+                       option_type, list_date, delist_date
+                FROM mo_contract_master
+                WHERE underlying = 'MO' AND status = 'active'
+                ORDER BY expiry_date, strike_price, option_type
+            """).fetchall()
+            conn.close()
+
+            result = []
+            for r in rows:
+                exp = r[3] or ''
+                if len(exp) == 10:
+                    exp = exp.replace('-', '')
+                result.append({
+                    "ts_code": r[0],
+                    "contract_code": r[1],
+                    "strike": r[4] or 0.0,
+                    "option_type": r[5],
+                    "expire_date": exp,
+                    "list_date": r[6] or '',
+                })
+
+            logger.info(f"Found {len(result)} MO option contracts from local master")
+            return result
+        except Exception:
+            # Fallback to Tushare if master table doesn't exist
+            logger.warning("Local master not available, falling back to Tushare")
+            return self._get_mo_contracts_from_tushare()
+
+    def _get_mo_contracts_from_tushare(self) -> List[Dict[str, Any]]:
+        """Fallback: Get MO contracts from Tushare opt_basic."""
         df = self._client.opt_basic(exchange="CFFEX")
         if df is None or df.empty:
             logger.warning("No option contracts returned from Tushare")
             return []
 
-        # Filter MO contracts
         ts_codes = df.get("ts_code", pd.Series(dtype=str))
         if isinstance(ts_codes, pd.Series):
             mask = ts_codes.str.startswith("MO", na=False)
@@ -98,7 +134,7 @@ class MOMinuteDownloader:
                 "list_date": str(row.get("list_date", "")),
             })
 
-        logger.info(f"Found {len(result)} MO option contracts")
+        logger.info(f"Found {len(result)} MO option contracts from Tushare")
         return result
 
     def download_contract(
@@ -106,25 +142,24 @@ class MOMinuteDownloader:
         ts_code: str,
         start_date: date,
         end_date: date,
+        contract_code: str = None,
+        strike: float = None,
+        opt_type: str = None,
+        expire_date: str = None,
     ) -> int:
         """Download minute bars for a single contract, split by month."""
         if self.freq not in SUPPORTED_FREQS:
             raise ValueError(f"Unsupported frequency: {self.freq}")
 
-        contract_code = self._extract_contract(ts_code)
-        strike = self._parse_strike(ts_code)
-        opt_type = self._parse_opt_type(ts_code)
-        expire_date = ""
+        # Parse from ts_code if not provided
+        contract_code = contract_code or self._extract_contract(ts_code)
+        strike = strike if strike is not None else self._parse_strike(ts_code)
+        opt_type = opt_type or self._parse_opt_type(ts_code)
 
-        # Get contract metadata from opt_basic
-        all_contracts = self._client.opt_basic(exchange="CFFEX")
-        if all_contracts is not None and not all_contracts.empty:
-            row = all_contracts[all_contracts.get("ts_code") == ts_code]
-            if not row.empty:
-                r = row.iloc[0]
-                expire_date = str(r.get("delist_date", ""))
-                if len(expire_date) == 8 and expire_date.isdigit():
-                    expire_date = f"{expire_date[:4]}-{expire_date[4:6]}-{expire_date[6:8]}"
+        if not expire_date:
+            expire_date = ""
+        elif len(expire_date) == 8 and expire_date.isdigit():
+            expire_date = f"{expire_date[:4]}-{expire_date[4:6]}-{expire_date[6:8]}"
 
         current = start_date
         total_count = 0
@@ -189,7 +224,13 @@ class MOMinuteDownloader:
             ts_code = c["ts_code"]
             logger.info(f"[{i+1}/{len(contracts)}] Downloading {ts_code} ({c['contract_code']})")
             try:
-                count = self.download_contract(ts_code, start_date, end_date)
+                count = self.download_contract(
+                    ts_code, start_date, end_date,
+                    contract_code=c.get("contract_code"),
+                    strike=c.get("strike"),
+                    opt_type=c.get("option_type"),
+                    expire_date=c.get("expire_date", ""),
+                )
                 results[c["contract_code"]] = count
             except Exception as e:
                 logger.error(f"Failed to download {ts_code}: {e}")

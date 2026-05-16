@@ -13,7 +13,7 @@ _last_verify_report: dict = {}
 _verify_in_progress = False
 
 
-@router.get("/status")
+@router.get("/status", summary="系统状态", description="获取系统完整状态：数据库统计、表行数等")
 def get_status():
     """Full system status: DB stats, table counts."""
     with TzDataClient() as client:
@@ -21,13 +21,13 @@ def get_status():
     return status
 
 
-@router.get("/health")
+@router.get("/health", summary="健康检查", description="简单的健康检查接口")
 def health_check():
     """Simple health check."""
     return {"status": "ok", "version": "0.3.0"}
 
 
-@router.get("/verify/report")
+@router.get("/verify/report", summary="校验报告", description="获取最后一次数据校验报告")
 def get_verify_report():
     """Get the last verification report."""
     if not _last_verify_report:
@@ -35,7 +35,7 @@ def get_verify_report():
     return _last_verify_report
 
 
-@router.post("/verify/run")
+@router.post("/verify/run", summary="触发数据校验", description="触发一次完整的数据校验流程（后台异步执行）")
 async def run_verify(background_tasks: BackgroundTasks):
     """Trigger a full verification run."""
     global _verify_in_progress
