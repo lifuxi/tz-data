@@ -133,7 +133,8 @@ GET /api/maintenance/schedule
 3. **Redis broker**：推荐 Memurai 或 WSL Redis
 4. **Celery Beat** 可与 Worker 同一进程运行（`--beat` 参数），或单独启动
 
-## 下一页
+## 相关文档
 
+- [数据报告全量清单](14-data-reports.md) — 所有报告与 Beat 任务的映射关系
 - [前端页面指南](11-frontend.md) — Vue3 前端
 - [部署与运维](13-deployment.md) — 启动脚本和 FAQ
