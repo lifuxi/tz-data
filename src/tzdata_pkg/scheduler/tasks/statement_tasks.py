@@ -4,6 +4,7 @@ Celery tasks for statement/bill management.
 import logging
 from datetime import datetime, timedelta
 from tzdata_pkg.scheduler.celery_app import celery_app
+from tzdata_pkg.scheduler.task_logger import log_beat_task
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ def batch_upload_statements(self, file_paths: list[str], account_id: int):
 
 
 @celery_app.task
+@log_beat_task
 def check_missing_bills_task():
     """
     Daily check for missing bills across all accounts.
@@ -187,6 +189,7 @@ def _get_trading_dates(start_date, end_date):
 
 
 @celery_app.task
+@log_beat_task
 def trade_matching_task():
     """
     Run FIFO trade matching on raw trades.

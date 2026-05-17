@@ -178,6 +178,60 @@ class CFMMCScraper:
             logger.warning(f"Download failed for {date_str}: {e}")
             return None
 
+    def health_check(self) -> dict:
+        """
+        Check CFMMC website accessibility and login page structure.
+
+        Returns:
+            Dict with health status:
+            - status: 'healthy' | 'degraded' | 'unhealthy'
+            - http_status: HTTP response code
+            - login_form_found: bool
+            - error: error description (if any)
+        """
+        import httpx
+
+        result = {
+            'status': 'unhealthy',
+            'http_status': None,
+            'login_form_found': False,
+            'error': None,
+        }
+
+        try:
+            resp = httpx.get(CFMMC_LOGIN_URL, follow_redirects=True, timeout=15)
+            result['http_status'] = resp.status_code
+
+            if resp.status_code != 200:
+                result['error'] = f"HTTP {resp.status_code}"
+                result['status'] = 'unhealthy'
+                return result
+
+            # Check for login form selectors
+            html = resp.text
+            login_form_found = (
+                'username' in html and 'password' in html
+            )
+            result['login_form_found'] = login_form_found
+
+            if not login_form_found:
+                result['status'] = 'degraded'
+                result['error'] = 'STRUCTURE_CHANGED: login form selectors not found'
+                return result
+
+            result['status'] = 'healthy'
+            return result
+
+        except httpx.ConnectError as e:
+            result['error'] = f"CONNECT_FAILED: {e}"
+            return result
+        except httpx.TimeoutException as e:
+            result['error'] = f"TIMEOUT: {e}"
+            return result
+        except Exception as e:
+            result['error'] = str(e)[:200]
+            return result
+
     def close(self):
         """Close browser and clean up resources."""
         if self.context:

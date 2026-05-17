@@ -511,3 +511,46 @@ CREATE TABLE IF NOT EXISTS task_failure_log (
 
 CREATE INDEX IF NOT EXISTS idx_failure_log_task ON task_failure_log(task_name);
 CREATE INDEX IF NOT EXISTS idx_failure_log_time ON task_failure_log(failed_at);
+
+-- ============================================================
+-- MO Option Implied Volatility (BS calculated)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS mo_daily_iv_quotes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,           -- YYYYMMDD
+    contract_code TEXT NOT NULL,        -- MO2505-C-8500
+    underlying TEXT DEFAULT 'MO',
+    option_type TEXT,                   -- call / put
+    strike REAL,
+    expire_date TEXT,                   -- YYYY-MM-DD
+    iv REAL,                            -- implied volatility (0-1)
+    delta REAL,
+    gamma REAL,
+    theta REAL,
+    vega REAL,
+    option_price REAL,                  -- daily close price
+    underlying_price REAL,              -- 000852 index close
+    risk_free_rate REAL DEFAULT 0.02,
+    source TEXT DEFAULT 'bs_calc',      -- bs_calc / tushare / cffex
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(trade_date, contract_code, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_iv_date ON mo_daily_iv_quotes(trade_date);
+CREATE INDEX IF NOT EXISTS idx_iv_contract ON mo_daily_iv_quotes(contract_code);
+CREATE INDEX IF NOT EXISTS idx_iv_underlying ON mo_daily_iv_quotes(underlying);
+
+-- Celery Beat task execution log
+CREATE TABLE IF NOT EXISTS beat_task_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_name TEXT NOT NULL,
+    scheduled_at TEXT,
+    executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status TEXT,          -- success / failed / timeout
+    duration_ms INTEGER,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_beat_task_name ON beat_task_log(task_name);
+CREATE INDEX IF NOT EXISTS idx_beat_task_time ON beat_task_log(executed_at DESC);

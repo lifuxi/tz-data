@@ -11,6 +11,7 @@ import sqlite3
 from datetime import date, timedelta
 
 from tzdata_pkg.scheduler.celery_app import celery_app
+from tzdata_pkg.scheduler.task_logger import log_beat_task
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ TZDATA_TRADING_DB = "C:/myspace/tz-data/data/tzdata_trading.db"
 
 
 @celery_app.task
+@log_beat_task
 def sync_index_daily():
     """同步中证1000/沪深300指数日线数据，写入 daily_index_prices 表。
     每日 18:30 执行。
@@ -109,6 +111,7 @@ def _download_and_store_index(index_code: str, start_date: str, end_date: str) -
 
 
 @celery_app.task
+@log_beat_task
 def compute_option_greeks():
     """预计算期权希腊字母，写入 option_greeks_daily 表。
     从 mo_contract_master 获取全量活跃合约，而非仅 trades 中的合约。
@@ -205,6 +208,7 @@ def compute_option_greeks():
 
 
 @celery_app.task
+@log_beat_task
 def compute_daily_vwap():
     """从 minute_quotes 计算日频 VWAP 并回填 trades.vwap 字段。
     每日 18:30 执行。

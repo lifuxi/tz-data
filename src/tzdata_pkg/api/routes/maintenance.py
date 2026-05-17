@@ -2266,3 +2266,62 @@ def get_sync_failure_stats(hours: int = 24):
         }
     }
 
+
+@router.get("/beat-tasks")
+def get_beat_task_log(days: int = 7):
+    """P2-11: Get Celery Beat task execution history.
+
+    Returns recent execution records for all Beat tasks, with status,
+    duration, and error info. Flags tasks with delay > 30min as 'warn'.
+    """
+    from tzdata_pkg.storage.db_registry import DBRegistry
+
+    pool = DBRegistry().get_pool('market')
+    with pool.connection() as conn:
+        rows = conn.execute("""
+            SELECT task_name, scheduled_at, executed_at, status,
+                   duration_ms, error
+            FROM beat_task_log
+            WHERE executed_at >= datetime('now', ?)
+            ORDER BY executed_at DESC
+            LIMIT 500
+        """, (f'-{days} days',)).fetchall()
+
+    from datetime import datetime, timedelta
+    tasks = {}
+    for r in rows:
+        name = r[0]
+        if name not in tasks:
+            tasks[name] = []
+        tasks[name].append({
+            'scheduled_at': r[1],
+            'executed_at': r[2],
+            'status': r[3],
+            'duration_ms': r[4],
+            'error': r[5],
+        })
+
+    result = []
+    for name, executions in tasks.items():
+        last_exec = executions[0]
+        # Check delay: if last execution was > 30min from now, mark warn
+        delay_warn = False
+        if last_exec['executed_at']:
+            try:
+                exec_time = datetime.strptime(last_exec['executed_at'], '%Y-%m-%d %H:%M:%S')
+                if datetime.now() - exec_time > timedelta(minutes=30):
+                    delay_warn = True
+            except ValueError:
+                pass
+
+        result.append({
+            'task_name': name,
+            'last_status': last_exec['status'],
+            'last_duration_ms': last_exec['duration_ms'],
+            'last_error': last_exec.get('error'),
+            'delay_warn': delay_warn,
+            'recent_executions': executions[:5],
+        })
+
+    return {'success': True, 'data': {'tasks': result, 'window_days': days}}
+

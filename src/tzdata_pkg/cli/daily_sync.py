@@ -288,7 +288,7 @@ def sync_iv_daily(
     calendar_driven: bool = True,
 ) -> dict:
     """
-    Sync option IV data from Tushare for a specific date.
+    Sync option IV data. Tries Tushare first; falls back to BS calculation.
 
     Args:
         underlyings: List of underlying codes (default: ['MO', 'HO', 'IO'])
@@ -311,6 +311,7 @@ def sync_iv_daily(
         else:
             trade_date = date.today().isoformat()
 
+    # Try Tushare first
     try:
         from tzdata_pkg.config import get_tushare_config
         from tzdata_pkg.download.tushare.client import TushareClient
@@ -319,110 +320,135 @@ def sync_iv_daily(
         client = TushareClient(token=tushare_cfg["token"])
     except Exception as e:
         logger.error(f"Tushare client init failed: {e}")
-        return {"error": str(e)}
+        client = None
 
-    conn = None
     results = {}
 
-    try:
-        conn = __import__('sqlite3').connect(TARGET_DB)
+    if client:
+        conn = None
+        try:
+            conn = __import__('sqlite3').connect(TARGET_DB)
 
-        # Ensure tables exist
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS option_sim_iv_series (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                underlying VARCHAR(20) NOT NULL,
-                trade_date VARCHAR(20) NOT NULL,
-                expiry VARCHAR(20),
-                strike FLOAT,
-                option_type VARCHAR(10),
-                iv FLOAT,
-                underlying_price FLOAT,
-                source VARCHAR(20) DEFAULT 'market',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(underlying, trade_date, expiry, strike, option_type)
-            );
-        """)
+            # Ensure tables exist
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS option_sim_iv_series (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    underlying VARCHAR(20) NOT NULL,
+                    trade_date VARCHAR(20) NOT NULL,
+                    expiry VARCHAR(20),
+                    strike FLOAT,
+                    option_type VARCHAR(10),
+                    iv FLOAT,
+                    underlying_price FLOAT,
+                    source VARCHAR(20) DEFAULT 'market',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(underlying, trade_date, expiry, strike, option_type)
+                );
+            """)
 
-        date_num = trade_date.replace('-', '')
+            date_num = trade_date.replace('-', '')
 
-        for underlying in underlyings:
+            for underlying in underlyings:
+                try:
+                    logger.info(f"Fetching IV data for {underlying} on {trade_date}...")
+
+                    # Fetch all options for underlying
+                    all_contracts = client.opt_basic(exchange="CFFEX")
+                    if all_contracts is None or all_contracts.empty:
+                        results[underlying] = {"status": "no_contracts", "count": 0}
+                        continue
+
+                    # Filter by underlying
+                    ts_codes = all_contracts.get("ts_code", "")
+                    if isinstance(ts_codes, pd.Series):
+                        mask = ts_codes.str.startswith(underlying, na=False)
+                        contracts = all_contracts[mask]
+                    else:
+                        contracts = all_contracts
+
+                    logger.info(f"Found {len(contracts)} contracts for {underlying}")
+
+                    count = 0
+                    for _, opt in contracts.iterrows():
+                        ts_code = opt.get("ts_code", "")
+                        if not ts_code:
+                            continue
+
+                        # Fetch daily data for this contract on target date
+                        df = client.opt_daily(ts_code, start_date=date_num, end_date=date_num)
+                        if df is None or df.empty:
+                            continue
+
+                        for _, row in df.iterrows():
+                            try:
+                                iv = _safe_float(row.get('iv'))
+                                # Skip if no IV data
+                                if iv is None or iv <= 0:
+                                    continue
+
+                                # Parse contract details
+                                contract_code = _parse_contract_code(ts_code)
+                                strike = _parse_strike(ts_code)
+                                opt_type = _parse_opt_type(ts_code)
+                                expiry = str(opt.get('delist_date', ''))
+                                if len(expiry) == 8 and expiry.isdigit():
+                                    expiry = f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:8]}"
+
+                                conn.execute("""
+                                    INSERT OR REPLACE INTO option_sim_iv_series
+                                    (underlying, trade_date, expiry, strike, option_type,
+                                     iv, underlying_price, source)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, 'tushare')
+                                """, (
+                                    underlying,
+                                    trade_date,
+                                    expiry if expiry else None,
+                                    strike,
+                                    opt_type,
+                                    iv,
+                                    _safe_float(row.get('close')),
+                                ))
+                                count += 1
+                            except Exception as e:
+                                logger.debug(f"Failed to store IV for {ts_code}: {e}")
+
+                        time.sleep(0.5)  # Rate limit
+
+                    conn.commit()
+                    logger.info(f"Synced {count} IV records for {underlying}")
+                    results[underlying] = {"status": "ok", "count": count}
+
+                except Exception as e:
+                    logger.error(f"Failed to sync IV for {underlying}: {e}")
+                    results[underlying] = {"status": "error", "error": str(e)}
+
+        finally:
+            if conn:
+                conn.close()
+
+    # Check if Tushare returned any IV data; fallback to BS calculation for MO
+    tushare_iv_count = sum(
+        v.get("count", 0) for v in results.values() if isinstance(v, dict)
+    )
+    if tushare_iv_count == 0 and 'MO' in underlyings:
+        logger.info("Tushare returned no IV data, falling back to BS calculation for MO")
+        try:
+            from tzdata_pkg.download.tushare.mo_iv_downloader import MOIVDownloader
+
+            downloader = MOIVDownloader()
             try:
-                logger.info(f"Fetching IV data for {underlying} on {trade_date}...")
-
-                # Fetch all options for underlying
-                all_contracts = client.opt_basic(exchange="CFFEX")
-                if all_contracts is None or all_contracts.empty:
-                    results[underlying] = {"status": "no_contracts", "count": 0}
-                    continue
-
-                # Filter by underlying
-                ts_codes = all_contracts.get("ts_code", "")
-                if isinstance(ts_codes, pd.Series):
-                    mask = ts_codes.str.startswith(underlying, na=False)
-                    contracts = all_contracts[mask]
-                else:
-                    contracts = all_contracts
-
-                logger.info(f"Found {len(contracts)} contracts for {underlying}")
-
-                count = 0
-                for _, opt in contracts.iterrows():
-                    ts_code = opt.get("ts_code", "")
-                    if not ts_code:
-                        continue
-
-                    # Fetch daily data for this contract on target date
-                    df = client.opt_daily(ts_code, start_date=date_num, end_date=date_num)
-                    if df is None or df.empty:
-                        continue
-
-                    for _, row in df.iterrows():
-                        try:
-                            iv = _safe_float(row.get('iv'))
-                            # Skip if no IV data
-                            if iv is None or iv <= 0:
-                                continue
-
-                            # Parse contract details
-                            contract_code = _parse_contract_code(ts_code)
-                            strike = _parse_strike(ts_code)
-                            opt_type = _parse_opt_type(ts_code)
-                            expiry = str(opt.get('delist_date', ''))
-                            if len(expiry) == 8 and expiry.isdigit():
-                                expiry = f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:8]}"
-
-                            conn.execute("""
-                                INSERT OR REPLACE INTO option_sim_iv_series
-                                (underlying, trade_date, expiry, strike, option_type,
-                                 iv, underlying_price, source)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, 'tushare')
-                            """, (
-                                underlying,
-                                trade_date,
-                                expiry if expiry else None,
-                                strike,
-                                opt_type,
-                                iv,
-                                _safe_float(row.get('close')),
-                            ))
-                            count += 1
-                        except Exception as e:
-                            logger.debug(f"Failed to store IV for {ts_code}: {e}")
-
-                    time.sleep(0.5)  # Rate limit
-
-                conn.commit()
-                logger.info(f"Synced {count} IV records for {underlying}")
-                results[underlying] = {"status": "ok", "count": count}
-
-            except Exception as e:
-                logger.error(f"Failed to sync IV for {underlying}: {e}")
-                results[underlying] = {"status": "error", "error": str(e)}
-
-    finally:
-        if conn:
-            conn.close()
+                td = date.fromisoformat(trade_date)
+                bs_result = downloader.calculate_iv(td)
+                results['MO'] = {
+                    "status": bs_result.get("reason", "ok"),
+                    "count": bs_result.get("success", 0),
+                    "source": "bs_calc",
+                }
+            finally:
+                downloader.close()
+        except Exception as e:
+            logger.error(f"BS IV calculation failed: {e}")
+            results['MO'] = {"status": "error", "error": str(e), "source": "bs_calc"}
 
     return results
 

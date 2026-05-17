@@ -10,11 +10,13 @@ from datetime import date, timedelta
 
 from tzdata_pkg.scheduler.celery_app import celery_app
 from tzdata_pkg.config import BILLS_DB
+from tzdata_pkg.scheduler.task_logger import log_beat_task
 
 logger = logging.getLogger(__name__)
 
 
 @celery_app.task
+@log_beat_task
 def daily_bill_calendar_check():
     """
     Check bill completeness against trading calendar.
@@ -131,3 +133,51 @@ def _get_bill_dates_from_db() -> set:
     except Exception as e:
         logger.error(f"Failed to read bill dates: {e}")
         return set()
+
+
+@celery_app.task
+@log_beat_task
+def cfmmc_scraper_health_check():
+    """
+    Weekly health check for CFMMC website accessibility.
+    Scheduled at Saturday 09:00.
+
+    Sends DingTalk alert if the site is unreachable or structure changed.
+    """
+    try:
+        from tzdata_pkg.maintenance.statements.cfmmc_scraper import CFMMCScraper
+
+        scraper = CFMMCScraper(headless=True)
+        result = scraper.health_check()
+
+        logger.info(f"CFMMC health check: {result}")
+
+        if result['status'] != 'healthy':
+            try:
+                from tzdata_pkg.scheduler.tasks.alert_tasks import _get_dingtalk_webhook
+                from tzdata_pkg.core.monitoring import get_alert_manager, dingtalk_webhook_handler
+
+                webhook = _get_dingtalk_webhook()
+                if webhook:
+                    handler = dingtalk_webhook_handler(webhook)
+                    get_alert_manager().register_handler(handler)
+
+                get_alert_manager().send_alert(
+                    title="CFMMC 爬虫健康检查告警",
+                    message=f"CFMMC 网站状态: **{result['status']}**\n\n"
+                            f"**HTTP 状态**: {result['http_status']}\n"
+                            f"**登录表单**: {'已找到' if result['login_form_found'] else '未找到'}\n"
+                            f"**错误**: {result.get('error', 'N/A')}\n\n"
+                            f"建议: 检查 CFMMC 网站是否可访问，页面结构是否变更。",
+                    level="warning" if result['status'] == 'degraded' else "error",
+                    category="scraper_health",
+                    extra_data=result,
+                )
+            except Exception as e:
+                logger.error(f"Failed to send CFMMC health alert: {e}")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"CFMMC health check failed: {e}", exc_info=True)
+        return {"status": "failed", "error": str(e)}

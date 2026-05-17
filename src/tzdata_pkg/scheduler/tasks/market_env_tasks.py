@@ -13,6 +13,7 @@ import sqlite3
 from datetime import date, timedelta
 
 from tzdata_pkg.scheduler.celery_app import celery_app
+from tzdata_pkg.scheduler.task_logger import log_beat_task
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ TZDATA_TRADING_DB = "C:/myspace/tz-data/data/tzdata_trading.db"
 
 
 @celery_app.task
+@log_beat_task
 def compute_mo_market_env():
     """
     Compute MO market environment classification.

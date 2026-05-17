@@ -4,6 +4,7 @@ Celery tasks for data synchronization.
 import logging
 from datetime import date
 from tzdata_pkg.scheduler.celery_app import celery_app
+from tzdata_pkg.scheduler.task_logger import log_beat_task
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ def sync_catalog_task(self, catalog_id: int, mode: str = 'incremental'):
 
 
 @celery_app.task
+@log_beat_task
 def daily_incremental_sync():
     """
     Daily incremental sync for all enabled catalogs.

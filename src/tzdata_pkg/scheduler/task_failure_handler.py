@@ -100,7 +100,6 @@ def handle_task_failure(sender=None, task_id=None, task=None,
         'tzdata_pkg.scheduler.tasks.bill_tasks',
         'tzdata_pkg.scheduler.tasks.data_tasks',
         'tzdata_pkg.scheduler.tasks.market_env_tasks',
-        'src.tasks.',
     )
     if not any(task_name.startswith(p) for p in alert_prefixes):
         return

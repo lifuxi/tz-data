@@ -11,6 +11,7 @@ from datetime import date, timedelta
 
 from tzdata_pkg.scheduler.celery_app import celery_app
 from tzdata_pkg.maintenance.sync.audit_logger import get_audit_logger
+from tzdata_pkg.scheduler.task_logger import log_beat_task
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ def _is_trading_day() -> bool:
 
 
 @celery_app.task
+@log_beat_task
 def sync_mo_iv():
     """
     Sync MO/HO/IO IV data from Tushare for the latest trading day.
@@ -89,6 +91,7 @@ def sync_mo_iv():
 
 
 @celery_app.task
+@log_beat_task
 def sync_underlying_daily():
     """
     Sync underlying daily bar data (000852, IM, 512100, A00) from akshare/sina.
@@ -148,6 +151,7 @@ def sync_underlying_daily():
 
 
 @celery_app.task
+@log_beat_task
 def mo_data_quality_check():
     """
     Run MO data quality checks (freshness, consistency, completeness).
@@ -179,6 +183,7 @@ def mo_data_quality_check():
 
 
 @celery_app.task
+@log_beat_task
 def sync_mo_contracts():
     """
     Sync MO contract master from Tushare opt_basic.
@@ -220,6 +225,7 @@ def sync_mo_contracts():
 
 
 @celery_app.task
+@log_beat_task
 def sync_mo_minute():
     """
     Sync MO option minute bars from Tushare opt_mins.

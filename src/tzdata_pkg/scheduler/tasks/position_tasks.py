@@ -11,6 +11,7 @@ from datetime import date
 from tzdata_pkg.scheduler.celery_app import celery_app
 from tzdata_pkg.maintenance.sync.audit_logger import get_audit_logger
 from tzdata_pkg.config import TZDATA_MARKET_DB
+from tzdata_pkg.scheduler.task_logger import log_beat_task
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ def _is_trading_day() -> bool:
 
 
 @celery_app.task
+@log_beat_task
 def sync_mo_position():
     """Sync MO Top20 position ranking. Scheduled at 17:00 on trading days."""
     audit = get_audit_logger()
@@ -159,6 +161,7 @@ def sync_mo_position():
 
 
 @celery_app.task
+@log_beat_task
 def sync_ho_position():
     """Sync HO Top20 position ranking. Scheduled at 17:05 on trading days."""
     audit = get_audit_logger()
@@ -188,6 +191,7 @@ def sync_ho_position():
 
 
 @celery_app.task
+@log_beat_task
 def sync_io_position():
     """Sync IO Top20 position ranking. Scheduled at 17:10 on trading days."""
     audit = get_audit_logger()
