@@ -1,6 +1,6 @@
 # 数据维护与同步
 
-> 版本：v0.7.0 | 最后更新：2026-05-15
+> 版本：v0.7.0 | 最后更新：2026-05-17
 
 ## 系统架构
 
@@ -179,6 +179,31 @@ GET /api/maintenance/health/diff           # 两次快照差异
 | `daily-completeness-check` | 19:00 (每日) | 数据完整性检查 |
 
 查看完整调度表：[Celery 任务调度](10-celery-tasks.md)
+
+## 异常值检测
+
+系统每日 21:30 自动执行异常值检测，覆盖以下规则：
+
+| 规则 | 检测条件 | 返回类型 |
+|------|---------|---------|
+| 价格突跃 | 相邻交易日涨跌幅 > 20% | `price_spike` |
+| 成交量异常 | 当日 volume > 30 日均值 × 3 | `volume_anomaly` |
+| 零价格 | close=0 但 volume>0 | `zero_price` |
+| 持仓突变 | 总持仓日环比变化 > 50% | `position_spike` |
+| IV 异常 | IV 日环比变化 > 0.3 | `iv_anomaly` |
+
+```python
+from tzdata_pkg.maintenance.monitoring.anomaly_detector import AnomalyDetector
+
+detector = AnomalyDetector()
+anomalies = detector.detect_all()
+# [{type: 'price_spike', exchange: 'CFFEX', contract: 'MO2506', ...}, ...]
+```
+
+API 端点：
+```
+GET /api/maintenance/beat-tasks?days=7   # Beat 任务执行记录
+```
 
 ## 前端操作
 

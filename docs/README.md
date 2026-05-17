@@ -1,6 +1,6 @@
 # tz-data 文档索引
 
-> 版本：v0.7.0 | 最后更新：2026-05-15
+> 版本：v0.7.0 | 最后更新：2026-05-17
 
 tz-data 是中国期货/期权市场统一数据平台，负责从交易所（CFFEX/SHFE/DCE/CZCE/INE）和数据源（Tushare/CFMMC/AkShare）下载、解析、存储并提供 REST API 和 Python SDK 查询接口。
 

@@ -1,6 +1,6 @@
 # Celery 任务调度
 
-> 版本：v0.7.0 | 最后更新：2026-05-15
+> 版本：v0.7.0 | 最后更新：2026-05-17
 
 ## Celery 配置
 
@@ -42,7 +42,7 @@ celery -A tzdata_pkg.scheduler.celery_app flower --port=5555
 
 访问 `http://localhost:5555` 查看任务状态。
 
-## Beat 完整调度表
+## Beat 完整调度表（23 个任务）
 
 ### MO 系列（交易日）
 
@@ -64,10 +64,14 @@ celery -A tzdata_pkg.scheduler.celery_app flower --port=5555
 |--------|---------|------|------|
 | 增量数据同步 | `daily-incremental-sync` | 18:00 | 同步所有启用目录 |
 | 状态刷新 | `daily-status-refresh` | 18:30 | 刷新本地/远程状态 |
+| 数据量对账 | `daily-reconcile-records` | 18:45 | 修正 total_records 漂移 |
+| 数据缺失检测 | `daily-gap-detection` | 18:50 | 交易日历 vs 实际数据 |
 | 完整性检查 | `daily-completeness-check` | 19:00 | 数据完整性检查 |
+| 跨库一致性检查 | `daily-cross-db-consistency` | 19:05 | bills.db vs tzdata_trading.db |
 | 缺失账单检测 | `daily-bill-missing-check` | 20:00 | 检测缺失账单 |
 | 交易开平匹配 | `daily-trade-matching` | 20:30 | FIFO 开平配对 |
 | 账单日历检查 | `daily-bill-calendar-check` | 21:00 | 交易日账单驱动检查 |
+| 异常值检测 | `daily-anomaly-detection` | 21:30 | 价格/成交量/持仓/IV 异常 |
 
 ### 数据层任务（周一~周五）
 
@@ -77,17 +81,23 @@ celery -A tzdata_pkg.scheduler.celery_app flower --port=5555
 | 日频 VWAP 计算 | `compute-daily-vwap` | 18:35 | 计算日频 VWAP |
 | 期权 Greeks 预计算 | `compute-option-greeks` | 20:00 | 预计算 Greeks |
 
+### 周末任务
+
+| 任务名 | 任务 ID | 时间 | 频率 | 说明 |
+|--------|---------|------|------|------|
+| CFMMC 健康检查 | `cfmmc-health-check` | 09:00 | 每周六 | 爬虫可达性+结构检测 |
+
 ## 任务模块列表
 
 | 模块 | 任务 |
 |------|------|
-| `mo_tasks.py` | `sync_mo_minute`, `sync_mo_iv`, `sync_underlying_daily`, `sync_mo_contracts`, `mo_data_quality_check`, `compute_mo_market_env` |
+| `mo_tasks.py` | `sync_mo_minute`, `sync_mo_iv`, `sync_underlying_daily`, `sync_mo_contracts`, `mo_data_quality_check` |
 | `position_tasks.py` | `sync_mo_position`, `sync_ho_position`, `sync_io_position` |
 | `market_env_tasks.py` | `compute_mo_market_env` |
 | `sync_tasks.py` | `daily_incremental_sync`, `sync_catalog_task` |
-| `check_tasks.py` | `refresh_status_task`, `completeness_check_task` |
+| `check_tasks.py` | `refresh_status_task`, `completeness_check_task`, `reconcile_catalog_records`, `detect_data_gaps`, `cross_db_consistency_check`, `anomaly_detection_task` |
 | `statement_tasks.py` | `parse_statement_task`, `auto_fetch_statements`, `batch_upload_statements`, `check_missing_bills_task`, `trade_matching_task` |
-| `bill_tasks.py` | `daily_bill_calendar_check` |
+| `bill_tasks.py` | `daily_bill_calendar_check`, `cfmmc_scraper_health_check` |
 | `data_tasks.py` | `sync_index_daily`, `compute_daily_vwap`, `compute_option_greeks` |
 | `alert_tasks.py` | 告警相关任务 |
 

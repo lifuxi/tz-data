@@ -46,11 +46,6 @@ celery_app.conf.update(
         'tzdata_pkg.scheduler.tasks.bill_tasks',
         'tzdata_pkg.scheduler.tasks.data_tasks',
         'tzdata_pkg.scheduler.tasks.alert_tasks',
-        # tz2.0 tasks (shared worker)
-        'src.tasks.report_tasks',
-        'src.tasks.analysis_tasks',
-        'src.tasks.mo_signal_tasks',
-        'src.infrastructure.mq.tasks',
     ],
 
     # ============================================================
@@ -147,6 +142,18 @@ celery_app.conf.update(
             'schedule': crontab(hour=19, minute=0),
         },
 
+        # 每日 19:05 跨库一致性检查（bills.db vs tzdata_trading.db）
+        'daily-cross-db-consistency': {
+            'task': 'tzdata_pkg.scheduler.tasks.check_tasks.cross_db_consistency_check',
+            'schedule': crontab(hour=19, minute=5),
+        },
+
+        # 每日 21:30 异常值自动检测（价格突跃/成交量/零价格/持仓/IV）
+        'daily-anomaly-detection': {
+            'task': 'tzdata_pkg.scheduler.tasks.check_tasks.anomaly_detection_task',
+            'schedule': crontab(hour=21, minute=30),
+        },
+
         # 每日 20:00 账单缺失检测
         'daily-bill-missing-check': {
             'task': 'tzdata_pkg.scheduler.tasks.statement_tasks.check_missing_bills_task',
@@ -186,39 +193,12 @@ celery_app.conf.update(
             'schedule': crontab(hour=20, minute=0),
         },
 
-        # ============================================================
-        # tz2.0 应用层任务
-        # ============================================================
-        # 每日 20:00 生成日报
-        'tz2-generate-daily-report': {
-            'task': 'src.tasks.report_tasks.generate_daily_report',
-            'schedule': crontab(hour=20, minute=0),
+        # 每周六 09:00 CFMMC 爬虫健康检查
+        'cfmmc-health-check': {
+            'task': 'tzdata_pkg.scheduler.tasks.bill_tasks.cfmmc_scraper_health_check',
+            'schedule': crontab(hour=9, minute=0, day_of_week='sat'),
         },
-        # 每周五 20:00 生成周报
-        'tz2-generate-weekly-report': {
-            'task': 'src.tasks.report_tasks.generate_weekly_report',
-            'schedule': crontab(hour=20, minute=0, day_of_week=5),
-        },
-        # 每日 08:00 数据质量报告
-        'tz2-data-quality-daily': {
-            'task': 'src.tasks.report_tasks.generate_data_quality_report',
-            'schedule': crontab(hour=8, minute=0),
-        },
-        # 每日 02:00 清理过期缓存
-        'tz2-cleanup-cache': {
-            'task': 'src.tasks.analysis_tasks.cleanup_expired_cache',
-            'schedule': crontab(hour=2, minute=0),
-        },
-        # 交易日 15:30 MO 每日信号 pipeline
-        'tz2-mo-daily-pipeline': {
-            'task': 'src.tasks.mo_signal_tasks.run_mo_daily_pipeline',
-            'schedule': crontab(hour=15, minute=30, day_of_week='1-5'),
-        },
-        # 每周五 16:00 MO 周度回顾
-        'tz2-mo-weekly-review': {
-            'task': 'src.tasks.mo_signal_tasks.run_mo_weekly_review',
-            'schedule': crontab(hour=16, minute=0, day_of_week=5),
-        },
+
     },
 )
 
