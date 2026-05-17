@@ -19,9 +19,10 @@ tz-data 是中国期货/期权市场统一数据平台，负责从交易所（CF
 | 9 | [MO 期权数据同步](09-mo-data-sync.md) | MO IV/标的/分钟/合约同步与质量检查 |
 | 10 | [Celery 任务调度](10-celery-tasks.md) | Celery 配置、Beat 调度表、任务模块 |
 | 11 | [前端页面指南](11-frontend.md) | Vue3 前端、菜单结构、页面功能 |
-| 12 | [数据库表结构](12-database-schema.md) | 3 库总览、表结构、字段说明 |
+| 12 | [数据库表结构](12-database-schema.md) | 已迁移 → [数据库与数据资产全景](15-database-schema.md) |
 | 13 | [部署与运维](13-deployment.md) | 启动脚本、备份、日志、FAQ |
 | 14 | [数据报告全量清单](14-data-reports.md) | 16 类报告、触发方式、数据库覆盖范围 |
+| 15 | [数据库与数据资产全景](15-database-schema.md) | 3 库 83 表、数据周期、业务域、数据流 |
 
 ## 相关项目
 

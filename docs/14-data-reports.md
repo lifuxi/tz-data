@@ -376,6 +376,11 @@ net_pnl = money_pnl - commission
 
 ## 相关文档
 
+- [交易日历与合约管理](08-trade-calendar.md) — 日历和主力合约
+- [数据库与数据资产全景](15-database-schema.md) — 3 库 83 表完整清单
+
+## 相关文档
+
 - [数据维护与同步](06-data-maintenance.md) — 同步引擎、质量评估、健康快照
 - [账单与交易管理](07-bill-management.md) — CFMMC 下载、账单解析、开平匹配
 - [Celery 任务调度](10-celery-tasks.md) — Beat 完整调度表
