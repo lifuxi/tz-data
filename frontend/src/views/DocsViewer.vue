@@ -59,6 +59,8 @@ const docIndex = [
   { title: '前端页面指南', path: '11-frontend.md' },
   { title: '数据库表结构', path: '12-database-schema.md' },
   { title: '部署与运维', path: '13-deployment.md' },
+  { title: '数据报告全量清单', path: '14-data-reports.md' },
+  { title: '数据库与数据资产全景', path: '15-database-schema.md' },
 ]
 
 const searchQuery = ref('')
