@@ -154,6 +154,15 @@ class IVBenchmarkDownloader:
             ))
             conn.commit()
 
+            # Dual-write to QuestDB
+            self._write_questdb_benchmark(td_iso, variety, round(atm_iv, 4) if atm_iv else None,
+                round(atm_strike, 1) if atm_strike else None, round(spot, 2),
+                round(hv_20, 4) if hv_20 else None, round(hv_60, 4) if hv_60 else None,
+                iv_hv_spread, round(skew, 4) if skew else None,
+                json.dumps(term_struct) if term_struct else None,
+                round(iv_pct, 2) if iv_pct is not None else None, regime,
+                pcr.get("pcr_volume"), pcr.get("pcr_oi"))
+
             return {
                 "status": "ok",
                 "atm_iv": atm_iv,
@@ -303,6 +312,49 @@ class IVBenchmarkDownloader:
         if iv_pct < 90:
             return "high"
         return "very_high"
+
+    def _write_questdb_benchmark(self, trade_date: str, variety: str, atm_iv, atm_strike,
+                                  spot_price, hv_20, hv_60, iv_hv_spread, skew_25delta,
+                                  term_structure, iv_percentile_1y, iv_regime,
+                                  pcr_volume, pcr_oi):
+        """Dual-write iv_benchmark to QuestDB via ILP over TCP."""
+        try:
+            import socket
+            ts_ns = int(datetime.strptime(trade_date, "%Y-%m-%d").timestamp() * 1e9)
+            fields = []
+            if atm_iv is not None:
+                fields.append(f"atm_iv={atm_iv}")
+            if atm_strike is not None:
+                fields.append(f"atm_strike={atm_strike}")
+            fields.append(f"spot_price={spot_price}")
+            if hv_20 is not None:
+                fields.append(f"hv_20={hv_20}")
+            if hv_60 is not None:
+                fields.append(f"hv_60={hv_60}")
+            if iv_hv_spread is not None:
+                fields.append(f"iv_hv_spread={iv_hv_spread}")
+            if skew_25delta is not None:
+                fields.append(f"skew_25delta={skew_25delta}")
+            if term_structure:
+                escaped = term_structure.replace("\\", "\\\\").replace('"', '\\"')
+                fields.append(f'term_structure="{escaped}"')
+            if iv_percentile_1y is not None:
+                fields.append(f"iv_percentile_1y={iv_percentile_1y}")
+            if iv_regime:
+                fields.append(f'iv_regime="{iv_regime}"')
+            if pcr_volume is not None:
+                fields.append(f"pcr_volume={pcr_volume}")
+            if pcr_oi is not None:
+                fields.append(f"pcr_oi={pcr_oi}")
+
+            ilp = f"iv_benchmark,variety={variety} {','.join(fields)} {ts_ns}\n"
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(("localhost", 9009))
+            sock.sendall(ilp.encode("utf-8"))
+            sock.close()
+        except Exception as e:
+            logger.debug(f"QuestDB dual-write failed for benchmark: {e}")
 
     def compute_backfill(self, start_date: str, end_date: str) -> dict:
         """Backfill benchmarks for a date range.
