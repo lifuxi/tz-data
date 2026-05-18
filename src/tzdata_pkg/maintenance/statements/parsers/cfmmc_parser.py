@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 class CFMMCParser:
     """Parser for CFMMC standard format statements."""
     
+    def parse_file(self, file_path: str) -> list:
+        """Instance method wrapper for compatibility with maintenance routes.
+
+        Returns a list of trade records (for backward compatibility).
+        """
+        result = self.parse(file_path)
+        return result.get('trades', [])
+
     @staticmethod
     def parse(file_path: str) -> dict:
         """

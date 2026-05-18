@@ -113,12 +113,26 @@ export const statementAPI = {
       },
     })
   },
-  
+
+  // Step 1+2: Upload and preview parsed data (no DB commit)
+  preview(formData) {
+    return apiClient.post('/statements/preview', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+  },
+
+  // Step 3: Confirm and submit to database
+  confirm(data) {
+    return apiClient.post('/statements/confirm', data)
+  },
+
   // List statements
   list(params = {}) {
     return apiClient.get('/statements', { params })
   },
-  
+
   // Parse statement
   parse(statementId) {
     return apiClient.post(`/statements/${statementId}/parse`)

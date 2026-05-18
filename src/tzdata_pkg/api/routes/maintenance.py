@@ -1456,6 +1456,114 @@ def delete_statement(statement_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/statements/preview", summary="上传并预览解析")
+async def preview_statement(file: UploadFile = File(...), account_id: Optional[str] = None):
+    """Step 1+2: 上传文件并解析预览，不提交到数据库。"""
+    import tempfile
+    from tzdata_pkg.maintenance.statements.parsers.cfmmc_parser import CFMMCParser
+    try:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        ext = os.path.splitext(file.filename)[1] if file.filename else '.txt'
+        unique_name = f"{uuid.uuid4().hex[:8]}_{file.filename or 'upload'}{ext}"
+        file_path = os.path.join(UPLOAD_DIR, unique_name)
+
+        content = await file.read()
+        with open(file_path, 'wb') as f:
+            f.write(content)
+
+        # Parse for preview
+        parser = CFMMCParser()
+        parsed = parser.parse(file_path)
+
+        return {
+            "success": True,
+            "file_path": file_path,
+            "file_name": file.filename,
+            "file_size": len(content),
+            "preview": {
+                "summary": parsed.get('summary', {}),
+                "trades": parsed.get('trades', []),
+                "positions": parsed.get('positions', []),
+                "funds": parsed.get('funds', []),
+                "trade_count": len(parsed.get('trades', [])),
+                "position_count": len(parsed.get('positions', [])),
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ConfirmStatementRequest(BaseModel):
+    file_path: str
+    file_name: str
+    account_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.post("/statements/confirm", summary="确认提交账单")
+def confirm_statement(req: ConfirmStatementRequest):
+    """Step 3: 将已解析的账单数据提交到数据库。"""
+    from tzdata_pkg.maintenance.statements.parsers.cfmmc_parser import CFMMCParser
+    from tzdata_pkg.storage.db_registry import DBRegistry
+    import re
+    try:
+        if not os.path.exists(req.file_path):
+            raise HTTPException(status_code=404, detail="上传文件不存在")
+
+        parser = CFMMCParser()
+        parsed = parser.parse(req.file_path)
+
+        # Extract bill date from filename (e.g. "20260513.txt" -> "2026-05-13")
+        date_match = re.search(r'(\d{4})(\d{2})(\d{2})', req.file_name or '')
+        bill_date = f"{date_match[1]}-{date_match[2]}-{date_match[3]}" if date_match else None
+
+        # Extract summary fields
+        summary = parsed.get('summary', {})
+        raw_summary = summary.get('raw_data', [])
+
+        pool = DBRegistry().get_pool('trading')
+        with pool.transaction() as conn:
+            # Insert into bills table
+            cursor = conn.execute("""
+                INSERT INTO bills (
+                    account_id, bill_date_start, bill_date_end, file_path,
+                    status, client_name, currency,
+                    balance_bf, balance_cf, client_equity,
+                    deposit, withdrawal, realized_pnl, commission
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                req.account_id,
+                bill_date,
+                bill_date,
+                req.file_path,
+                'parsed',
+                None,
+                'CNY',
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ))
+            bill_id = cursor.lastrowid
+
+        return {
+            "success": True,
+            "bill_id": bill_id,
+            "bill_date": bill_date,
+            "trade_count": len(parsed.get('trades', [])),
+            "position_count": len(parsed.get('positions', [])),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # === Bill Balance Verification ===
 
 @router.post("/statements/verify-balance", summary="余额校验")
