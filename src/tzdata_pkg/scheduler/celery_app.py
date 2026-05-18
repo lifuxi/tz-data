@@ -46,6 +46,10 @@ celery_app.conf.update(
         'tzdata_pkg.scheduler.tasks.bill_tasks',
         'tzdata_pkg.scheduler.tasks.data_tasks',
         'tzdata_pkg.scheduler.tasks.alert_tasks',
+        'tzdata_pkg.scheduler.tasks.iv_tasks',
+        'tzdata_pkg.scheduler.tasks.analysis_tasks',
+        'tzdata_pkg.scheduler.tasks.resample_tasks',
+        'tzdata_pkg.scheduler.tasks.realtime_tasks',
     ],
 
     # ============================================================
@@ -197,6 +201,78 @@ celery_app.conf.update(
         'cfmmc-health-check': {
             'task': 'tzdata_pkg.scheduler.tasks.bill_tasks.cfmmc_scraper_health_check',
             'schedule': crontab(hour=9, minute=0, day_of_week='sat'),
+        },
+
+        # ============================================================
+        # IV 波动率分析任务
+        # ============================================================
+        # 交易日 19:30 计算 IV 基准指标（ATM IV / HV / 偏斜 / 期限结构 / 分位数）
+        'iv-benchmark-daily': {
+            'task': 'tzdata_pkg.scheduler.tasks.iv_tasks.compute_iv_benchmark',
+            'schedule': crontab(hour=19, minute=30, day_of_week='mon-fri'),
+        },
+
+        # 交易日 19:40 IV 微笑曲线快照
+        'iv-smile-snapshot': {
+            'task': 'tzdata_pkg.scheduler.tasks.iv_tasks.compute_iv_smile_snapshot',
+            'schedule': crontab(hour=19, minute=40, day_of_week='mon-fri'),
+        },
+
+        # 每周六 10:30 IO/HO 数据同步补全
+        'iv-multi-variety-sync': {
+            'task': 'tzdata_pkg.scheduler.tasks.iv_tasks.sync_multi_variety_iv',
+            'schedule': crontab(hour=10, minute=30, day_of_week='sat'),
+        },
+
+        # ============================================================
+        # 行情多周期重采样（交易日收盘后）
+        # ============================================================
+        # 交易日 16:00 基于 1min 数据生成 5min/15min/30min/60min K 线
+        'daily-resample-multi-freq': {
+            'task': 'tzdata_pkg.scheduler.tasks.resample_tasks.daily_resample_multi_freq',
+            'schedule': crontab(hour=16, minute=0, day_of_week='mon-fri'),
+        },
+
+        # ============================================================
+        # Analysis pipeline (Viewpoint 2)
+        # ============================================================
+        # 交易日 19:30 全量分析流水线（机构 → 市场状态 → 信号）
+        'daily-analysis-pipeline': {
+            'task': 'tzdata_pkg.scheduler.tasks.analysis_tasks.analysis_pipeline',
+            'schedule': crontab(hour=19, minute=30, day_of_week='mon-fri'),
+        },
+
+        # ============================================================
+        # 实时行情采集任务
+        # ============================================================
+        # 交易日 09:25 盘前快照
+        'pre-market-snapshot': {
+            'task': 'tzdata_pkg.scheduler.tasks.realtime_tasks.pre_market_snapshot',
+            'schedule': crontab(hour=9, minute=25, day_of_week='mon-fri'),
+        },
+
+        # 交易时段 缺口检测（每 30 秒 — Celery 最小粒度为 1 分钟，设为每分钟）
+        'gap-detection': {
+            'task': 'tzdata_pkg.scheduler.tasks.realtime_tasks.gap_detection',
+            'schedule': crontab(minute='*/1', day_of_week='mon-fri'),
+        },
+
+        # 交易日 15:30 质量日报
+        'quality-report': {
+            'task': 'tzdata_pkg.scheduler.tasks.realtime_tasks.quality_report_generator',
+            'schedule': crontab(hour=15, minute=30, day_of_week='mon-fri'),
+        },
+
+        # 每日 00:00 合约到期清理
+        'catalog-auto-expire': {
+            'task': 'tzdata_pkg.scheduler.tasks.realtime_tasks.catalog_auto_expire',
+            'schedule': crontab(hour=0, minute=0),
+        },
+
+        # 每日 02:00 QuestDB 归档
+        'questdb-archive': {
+            'task': 'tzdata_pkg.scheduler.tasks.realtime_tasks.questdb_to_parquet_archive',
+            'schedule': crontab(hour=2, minute=0),
         },
 
     },

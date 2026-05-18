@@ -18,7 +18,7 @@ from tzdata_pkg.download.akshare.client import AkshareClient
 
 logger = logging.getLogger(__name__)
 
-BILLS_DB_PATH = os.environ.get("BILLS_DB_PATH", "C:/myspace/tz-data/data/bills.db")
+BILLS_DB_PATH = os.environ.get("BILLS_DB_PATH", "C:/myspace/tz-data/data/tzdata_trading.db")
 
 
 class A50DailyDownloader(BaseExchangeDownloader):

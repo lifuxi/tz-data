@@ -12,9 +12,34 @@ from tzdata_pkg.storage.db_registry import DBRegistry
 logger = logging.getLogger(__name__)
 
 
+def _make_timestamp(trade_date: str, trade_time: str = "00:00:00") -> str:
+    """Build QuestDB-compatible UTC timestamp from trade_date + trade_time.
+
+    QuestDB stores timestamps in UTC. Input is Asia/Shanghai local time.
+    """
+    # Normalize date format: YYYYMMDD or YYYY-MM-DD
+    if len(trade_date) == 8 and trade_date.isdigit():
+        trade_date = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
+
+    # Normalize time: HH:MM -> HH:MM:SS
+    if len(trade_time) == 5:
+        trade_time += ":00"
+
+    return f"{trade_date}T{trade_time}.000000Z"
+
+
 class QuestDBStore:
     """Storage operations for QuestDB time-series database."""
-    
+
+    @staticmethod
+    def _get_conn():
+        """Get QuestDB connection, returning None if unavailable."""
+        try:
+            return DBRegistry().get_questdb_connection()
+        except Exception as e:
+            logger.debug(f"QuestDB connection not available: {e}")
+            return None
+
     @staticmethod
     def insert_daily_quotes(
         exchange: str,
@@ -22,162 +47,108 @@ class QuestDBStore:
         product_code: str,
         quotes: list[dict]
     ) -> int:
-        """
-        Insert daily quotes into QuestDB.
-        
-        Args:
-            exchange: Exchange code (e.g., 'CFFEX')
-            contract_code: Contract code (e.g., 'IM2506')
-            product_code: Product code (e.g., 'IM')
-            quotes: List of quote dictionaries
-        
-        Returns:
-            Number of records inserted
-        """
-        conn = get_registry().get_questdb_connection()
-        
+        """Insert daily quotes into QuestDB daily_quotes table."""
+        conn = QuestDBStore._get_conn()
         if not conn:
-            logger.error("QuestDB connection not available")
             return 0
-        
+
         try:
             inserted = 0
-            
             with conn.cursor() as cur:
                 for quote in quotes:
-                    # Convert trade_date string to timestamp
-                    trade_date_str = quote.get('trade_date', '')
-                    if isinstance(trade_date_str, str):
-                        # Format: YYYYMMDD or YYYY-MM-DD
-                        if '-' in trade_date_str:
-                            ts = f"{trade_date_str}T00:00:00.000000Z"
-                        else:
-                            year = trade_date_str[:4]
-                            month = trade_date_str[4:6]
-                            day = trade_date_str[6:8]
-                            ts = f"{year}-{month}-{day}T00:00:00.000000Z"
-                    else:
+                    trade_date_str = quote.get("trade_date", "")
+                    if not trade_date_str:
                         continue
-                    
+                    ts = _make_timestamp(trade_date_str)
+
                     cur.execute("""
-                        INSERT INTO future_minute (
-                            ts, exchange, contract_code, product_code,
-                            open, high, low, close,
-                            volume, turnover, open_interest,
-                            source
-                        ) VALUES (
-                            CAST(%s AS TIMESTAMP),
-                            %s, %s, %s,
-                            %s, %s, %s, %s,
-                            %s, %s, %s,
-                            %s
-                        )
+                        INSERT INTO daily_quotes
+                            (ts, exchange, contract_code, product_code,
+                             open, high, low, close, settle, prev_settle,
+                             volume, turnover, open_interest,
+                             daily_change, daily_change_pct, amplitude,
+                             source)
+                        VALUES
+                            (CAST(%s AS TIMESTAMP), %s, %s, %s,
+                             %s, %s, %s, %s, %s, %s,
+                             %s, %s, %s,
+                             %s, %s, %s, %s)
                     """, (
-                        ts,
-                        exchange,
-                        contract_code,
-                        product_code,
-                        quote.get('open'),
-                        quote.get('high'),
-                        quote.get('low'),
-                        quote.get('close'),
-                        quote.get('volume', 0),
-                        quote.get('turnover', 0.0),
-                        quote.get('open_interest', 0),
-                        'tushare'
+                        ts, exchange, contract_code, product_code,
+                        quote.get("open"), quote.get("high"),
+                        quote.get("low"), quote.get("close"),
+                        quote.get("settle"), quote.get("prev_settle"),
+                        quote.get("volume", 0), quote.get("turnover", 0.0),
+                        quote.get("open_interest", 0),
+                        quote.get("daily_change"), quote.get("daily_change_pct"),
+                        quote.get("amplitude"), "exchange",
                     ))
-                    
                     inserted += 1
-            
+
             logger.info(f"Inserted {inserted} daily quotes into QuestDB")
             return inserted
-            
         except Exception as e:
             logger.error(f"Failed to insert daily quotes: {e}")
             return 0
-    
+
     @staticmethod
     def insert_minute_quotes(
         exchange: str,
         contract_code: str,
         product_code: str,
         quotes: list[dict],
-        frequency: str = '1min'
+        frequency: str = "1min",
     ) -> int:
+        """Insert minute quotes into QuestDB future_minute table.
+
+        Each quote dict must contain trade_date and trade_time (or datetime).
         """
-        Insert minute quotes into QuestDB.
-        
-        Args:
-            exchange: Exchange code
-            contract_code: Contract code
-            product_code: Product code
-            quotes: List of minute quote dictionaries
-            frequency: Data frequency
-        
-        Returns:
-            Number of records inserted
-        """
-        conn = get_registry().get_questdb_connection()
-        
+        conn = QuestDBStore._get_conn()
         if not conn:
-            logger.error("QuestDB connection not available")
             return 0
-        
+
         try:
             inserted = 0
-            
             with conn.cursor() as cur:
                 for quote in quotes:
-                    # Build timestamp from date and time
-                    trade_time = quote.get('trade_time', '')
-                    if not trade_time:
-                        continue
-                    
-                    # Format: HH:MM or HH:MM:SS
-                    if len(trade_time) == 5:  # HH:MM
-                        trade_time += ':00'
-                    
-                    # Assuming today's date (should be passed as parameter in production)
-                    # For now, use a placeholder - this needs to be fixed
-                    ts = f"2026-01-01T{trade_time}.000000Z"
-                    
+                    trade_date = quote.get("trade_date", "")
+                    trade_time = quote.get("trade_time", "")
+                    if not trade_date:
+                        # Fallback: try to parse from datetime field
+                        dt = quote.get("datetime", "")
+                        if dt and " " in str(dt):
+                            trade_date, trade_time = str(dt).split(" ", 1)
+                        else:
+                            continue
+
+                    ts = _make_timestamp(trade_date, trade_time)
+
                     cur.execute("""
-                        INSERT INTO future_minute (
-                            ts, exchange, contract_code, product_code,
-                            open, high, low, close,
-                            volume, turnover, open_interest,
-                            source
-                        ) VALUES (
-                            CAST(%s AS TIMESTAMP),
-                            %s, %s, %s,
-                            %s, %s, %s, %s,
-                            %s, %s, %s,
-                            %s
-                        )
+                        INSERT INTO future_minute
+                            (ts, exchange, contract_code, product_code,
+                             open, high, low, close,
+                             volume, turnover, open_interest,
+                             source)
+                        VALUES
+                            (CAST(%s AS TIMESTAMP), %s, %s, %s,
+                             %s, %s, %s, %s,
+                             %s, %s, %s, %s)
                     """, (
-                        ts,
-                        exchange,
-                        contract_code,
-                        product_code,
-                        quote.get('open'),
-                        quote.get('high'),
-                        quote.get('low'),
-                        quote.get('close'),
-                        quote.get('volume', 0),
-                        quote.get('turnover', 0.0),
-                        quote.get('open_interest', 0),
-                        'tushare'
+                        ts, exchange, contract_code, product_code,
+                        quote.get("open"), quote.get("high"),
+                        quote.get("low"), quote.get("close"),
+                        quote.get("volume", 0), quote.get("turnover", 0.0),
+                        quote.get("open_interest", 0),
+                        quote.get("source", "tushare"),
                     ))
-                    
                     inserted += 1
-            
-            logger.info(f"Inserted {inserted} minute quotes into QuestDB")
+
+            logger.info(f"Inserted {inserted} minute quotes ({frequency}) into QuestDB")
             return inserted
-            
         except Exception as e:
             logger.error(f"Failed to insert minute quotes: {e}")
             return 0
-    
+
     @staticmethod
     def insert_top20_holdings(
         exchange: str,
@@ -185,153 +156,79 @@ class QuestDBStore:
         product_code: str,
         holdings: list[dict]
     ) -> int:
-        """
-        Insert top 20 holdings into QuestDB.
-        
-        Args:
-            exchange: Exchange code
-            contract_code: Contract code
-            product_code: Product code
-            holdings: List of holding dictionaries
-        
-        Returns:
-            Number of records inserted
-        """
-        conn = get_registry().get_questdb_connection()
-        
+        """Insert top 20 holdings into QuestDB top20_holdings table."""
+        conn = QuestDBStore._get_conn()
         if not conn:
-            logger.error("QuestDB connection not available")
             return 0
-        
+
         try:
             inserted = 0
-            
             with conn.cursor() as cur:
                 for holding in holdings:
-                    # Use current date as timestamp (should be passed as parameter)
-                    ts = "2026-01-01T00:00:00.000000Z"
-                    
+                    trade_date = holding.get("trade_date", "")
+                    if not trade_date:
+                        continue
+                    ts = _make_timestamp(trade_date)
+
                     cur.execute("""
-                        INSERT INTO top20_holdings (
-                            ts, exchange, contract_code, product_code,
-                            member_name, rank,
-                            long_volume, short_volume,
-                            long_change, short_change
-                        ) VALUES (
-                            CAST(%s AS TIMESTAMP),
-                            %s, %s, %s,
-                            %s, %s,
-                            %s, %s,
-                            %s, %s
-                        )
+                        INSERT INTO top20_holdings
+                            (ts, exchange, contract_code, product_code,
+                             member_name, rank,
+                             long_volume, short_volume,
+                             long_change, short_change)
+                        VALUES
+                            (CAST(%s AS TIMESTAMP), %s, %s, %s,
+                             %s, %s,
+                             %s, %s,
+                             %s, %s)
                     """, (
-                        ts,
-                        exchange,
-                        contract_code,
-                        product_code,
-                        holding.get('member_name', ''),
-                        holding.get('rank', 0),
-                        holding.get('long_volume', 0),
-                        holding.get('short_volume', 0),
-                        holding.get('long_change', 0),
-                        holding.get('short_change', 0)
+                        ts, exchange, contract_code, product_code,
+                        holding.get("member_name", ""),
+                        holding.get("rank", 0),
+                        holding.get("long_volume", 0),
+                        holding.get("short_volume", 0),
+                        holding.get("long_change", 0),
+                        holding.get("short_change", 0),
                     ))
-                    
                     inserted += 1
-            
+
             logger.info(f"Inserted {inserted} holdings records into QuestDB")
             return inserted
-            
         except Exception as e:
             logger.error(f"Failed to insert holdings: {e}")
             return 0
-    
-    @staticmethod
-    def update_data_status_local(
-        catalog_id: int,
-        latest_date: date,
-        earliest_date: Optional[date] = None,
-        total_records: int = 0
-    ) -> bool:
-        """
-        Update local data status in SQLite metadata table.
-        
-        Args:
-            catalog_id: ID of the data catalog
-            latest_date: Latest trade date
-            earliest_date: Earliest trade date (optional)
-            total_records: Total number of records
-        
-        Returns:
-            True if updated successfully
-        """
-        registry = DBRegistry()
-        pool = registry.get_pool('market')
-        
-        try:
-            with pool.transaction() as conn:
-                # Check if record exists
-                cursor = conn.execute("""
-                    SELECT latest_date, earliest_date, total_records
-                    FROM data_status_local
-                    WHERE catalog_id = ?
-                """, (catalog_id,))
-                
-                row = cursor.fetchone()
-                
-                if row:
-                    # Update existing record
-                    new_earliest = earliest_date or row[1]
-                    new_total = row[2] + total_records
-                    conn.execute("""
-                        UPDATE data_status_local
-                        SET latest_date = ?,
-                            earliest_date = ?,
-                            total_records = ?,
-                            last_updated = CURRENT_TIMESTAMP
-                        WHERE catalog_id = ?
-                    """, (
-                        latest_date.isoformat() if isinstance(latest_date, date) else latest_date,
-                        new_earliest.isoformat() if new_earliest and isinstance(new_earliest, date) else new_earliest,
-                        new_total,
-                        catalog_id
-                    ))
-                else:
-                    # Insert new record
-                    conn.execute("""
-                        INSERT INTO data_status_local (
-                            catalog_id, latest_date, earliest_date, total_records,
-                            last_updated
-                        ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    """, (
-                        catalog_id,
-                        latest_date.isoformat() if isinstance(latest_date, date) else latest_date,
-                        earliest_date.isoformat() if earliest_date and isinstance(earliest_date, date) else earliest_date,
-                        total_records
-                    ))
-            
-            logger.debug(f"Updated data status for catalog {catalog_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to update data status: {e}")
-            return False
 
     @staticmethod
-    def reconcile_data_status_total(catalog_id: int, actual_count: int) -> bool:
-        """Reconcile data_status_local.total_records with actual COUNT(*), overwriting instead of accumulating."""
-        registry = DBRegistry()
-        pool = registry.get_pool('market')
+    def insert_dataframe(table_name: str, df: pd.DataFrame,
+                         timestamp_col: str = "ts") -> int:
+        """Insert a pandas DataFrame into QuestDB via batched INSERT."""
+        conn = QuestDBStore._get_conn()
+        if not conn or df.empty:
+            return 0
 
         try:
-            with pool.transaction() as conn:
-                conn.execute("""
-                    UPDATE data_status_local
-                    SET total_records = ?,
-                        last_updated = CURRENT_TIMESTAMP
-                    WHERE catalog_id = ?
-                """, (actual_count, catalog_id))
-            return True
+            columns = [c for c in df.columns if c != timestamp_col]
+            col_list = ", ".join([timestamp_col] + columns)
+            placeholders = ", ".join(["%s"] * (len(columns) + 1))
+
+            inserted = 0
+            with conn.cursor() as cur:
+                for _, row in df.iterrows():
+                    ts_val = row.get(timestamp_col)
+                    if ts_val is None or pd.isna(ts_val):
+                        continue
+                    if isinstance(ts_val, (datetime, date)):
+                        ts_val = ts_val.isoformat()
+
+                    values = [ts_val] + [row.get(c) for c in columns]
+                    cur.execute(
+                        f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders})",
+                        values,
+                    )
+                    inserted += 1
+
+            logger.info(f"Inserted {inserted} rows into QuestDB.{table_name}")
+            return inserted
         except Exception as e:
-            logger.warning(f"Failed to reconcile data status for catalog {catalog_id}: {e}")
-            return False
+            logger.error(f"Failed to insert DataFrame into QuestDB: {e}")
+            return 0

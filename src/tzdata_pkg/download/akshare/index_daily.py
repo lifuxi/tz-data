@@ -18,8 +18,8 @@ from tzdata_pkg.download.akshare.client import AkshareClient
 
 logger = logging.getLogger(__name__)
 
-# bills.db path — MO signal data uses bills.db, not tzdata_trading.db
-BILLS_DB_PATH = os.environ.get("BILLS_DB_PATH", "C:/myspace/tz-data/data/bills.db")
+# bills.db path — MO signal data uses tzdata_trading.db (bills table)
+BILLS_DB_PATH = os.environ.get("BILLS_DB_PATH", "C:/myspace/tz-data/data/tzdata_trading.db")
 
 
 class IndexDailyDownloader(BaseExchangeDownloader):

@@ -2,9 +2,9 @@
 """Unified CFFEX downloader.
 
 Merges daily_downloader, futures_downloader, and position_downloader into a
-single product-aware downloader that dual-writes to:
-  - tzdata_market.db (new unified storage, via MarketStore)
-  - cffex.db (legacy, transition period)
+single product-aware downloader that writes to tzdata_market.db.
+
+Phase 2 (2026-05-18): Removed dual-write to cffex.db (legacy DB deleted).
 
 Key fixes over the old code:
   - _get_table_name() now uses the actual product code instead of hardcoding "mo"
@@ -37,23 +37,6 @@ def unified_table_name(product: str, data_type: str) -> str:
     return f"{product}_{data_type}"
 
 
-# ── Legacy table writer (dual-write to old cffex.db) ────────
-
-class _LegacyCFFEXWriter:
-    """Writes to the old cffex.db using the original per-year partitioning.
-
-    This exists solely for the dual-write transition period.  Once consumers
-    switch to tzdata_market.db this class can be removed.
-    """
-
-    def __init__(self, legacy_downloader: CFFEXDownloader):
-        self._dl = legacy_downloader
-
-    def write(self, parse_result: CFFEXParseResult) -> int:
-        """Delegate to the legacy downloader's save_to_database."""
-        return self._dl.save_to_database(parse_result)
-
-
 # ── Unified CFFEX Downloader ────────────────────────────────
 
 class CFFEXUnifiedDownloader:
@@ -70,13 +53,12 @@ class CFFEXUnifiedDownloader:
         self.product = product
         self.data_type = data_type
 
-        # Unified storage pool (new DB)
+        # Unified storage pool (tzdata_market.db)
         self._pool = SQLitePool(str(TZDATA_MARKET_DB))
         self._ensure_unified_tables()
 
-        # Legacy downloader for dual-write
+        # Legacy downloader for downloading from CFFEX website (still needed for CSV parsing)
         self._legacy = self._build_legacy_downloader()
-        self._legacy_writer = _LegacyCFFEXWriter(self._legacy) if self._legacy else None
 
         self.logger = logging.getLogger(f"CFFEXUnified[{product}/{data_type}]")
 
@@ -158,6 +140,8 @@ class CFFEXUnifiedDownloader:
 
     def _save_quotes_unified(self, df: pd.DataFrame, trade_date: str) -> int:
         count = 0
+        quotes_for_questdb = []
+
         with self._pool.transaction() as conn:
             for _, row in df.iterrows():
                 instrument_id = self._safe_str(row.get("instrument_id"))
@@ -184,7 +168,39 @@ class CFFEXUnifiedDownloader:
                     self._safe_float(row.get("change_pct")),
                 ))
                 count += 1
+
+                # Collect for QuestDB dual-write
+                quotes_for_questdb.append({
+                    "trade_date": trade_date,
+                    "open": self._safe_float(row.get("open_price")),
+                    "high": self._safe_float(row.get("high_price")),
+                    "low": self._safe_float(row.get("low_price")),
+                    "close": self._safe_float(row.get("close_price")),
+                    "settle": self._safe_float(row.get("settlement_price")),
+                    "prev_settle": self._safe_float(row.get("pre_settle")),
+                    "volume": self._safe_int(row.get("volume")),
+                    "turnover": self._safe_float(row.get("turnover")),
+                    "open_interest": self._safe_int(row.get("open_interest")),
+                    "daily_change": self._safe_float(row.get("change")),
+                    "daily_change_pct": self._safe_float(row.get("change_pct")),
+                    "amplitude": None,
+                })
+
         self.logger.info(f"Saved {count} quotes to unified daily_quotes")
+
+        # Dual-write to QuestDB (non-blocking, silent failure)
+        if quotes_for_questdb:
+            try:
+                from tzdata_pkg.storage.questdb_store import QuestDBStore
+                QuestDBStore.insert_daily_quotes(
+                    exchange="CFFEX",
+                    contract_code=self.product,
+                    product_code=self.product,
+                    quotes=quotes_for_questdb,
+                )
+            except Exception:
+                pass
+
         return count
 
     def _save_positions_unified(self, df: pd.DataFrame, trade_date: str) -> int:
@@ -216,13 +232,13 @@ class CFFEXUnifiedDownloader:
     # ── Dual-write download methods ─────────────────────────
 
     def download_full(self, start_year: int = None, end_year: int = None) -> Dict[str, Any]:
-        """Full download with dual-write to both old and new storage."""
+        """Full download to tzdata_market.db."""
         start_year = start_year or self.config.get("partition", {}).get("start_year", 2024)
         end_year = end_year or datetime.now().year
 
         self.logger.info(f"Full download: {self.product}/{self.data_type}, {start_year}-{end_year}")
 
-        # Create legacy tables
+        # Create legacy tables for download (needed by download_batch for temp storage)
         if self._legacy:
             for year in range(start_year, end_year + 1):
                 self._legacy.create_tables(year)
@@ -236,7 +252,7 @@ class CFFEXUnifiedDownloader:
             results = self._legacy.download_batch(self.data_type, start_date, end_date, self.product)
             total_results.extend(results)
 
-            # Dual-write: save each successful result to unified storage
+            # Save each successful result to unified storage
             for r in results:
                 if r.success and r.file_path:
                     try:
@@ -246,12 +262,12 @@ class CFFEXUnifiedDownloader:
                         if parse_result.record_count > 0:
                             self.save_unified(parse_result)
                     except Exception as e:
-                        self.logger.warning(f"Dual-write failed for {r.file_path}: {e}")
+                        self.logger.warning(f"Save to unified failed for {r.file_path}: {e}")
 
         return self._summarize_results(total_results)
 
     def download_incremental(self) -> Dict[str, Any]:
-        """Incremental download with dual-write."""
+        """Incremental download to tzdata_market.db."""
         current_year = datetime.now().year
 
         if self._legacy:
@@ -262,18 +278,16 @@ class CFFEXUnifiedDownloader:
 
         if latest:
             start_date = datetime.strptime(latest, "%Y-%m-%d").date()
-            # Check if already up to date
             if start_date >= date.today():
                 self.logger.info("Data is up to date")
                 return {"data_type": self.data_type, "status": "up_to_date", "total_files": 0, "total_records": 0}
-            start_date = start_date  # resume from this date
         else:
             start_date = date(current_year, 1, 1)
 
         end_date = date.today()
         results = self._legacy.download_batch(self.data_type, start_date, end_date, self.product)
 
-        # Dual-write
+        # Save to unified storage
         for r in results:
             if r.success and r.file_path:
                 try:
@@ -283,12 +297,12 @@ class CFFEXUnifiedDownloader:
                     if parse_result.record_count > 0:
                         self.save_unified(parse_result)
                 except Exception as e:
-                    self.logger.warning(f"Dual-write failed for {r.file_path}: {e}")
+                    self.logger.warning(f"Save to unified failed for {r.file_path}: {e}")
 
         return self._summarize_results(results)
 
     def download_range(self, start_date: date, end_date: date, save_csv: bool = True) -> Dict[str, Any]:
-        """Download a specific date range with dual-write."""
+        """Download a specific date range to tzdata_market.db."""
         if self._legacy:
             current_year = start_date.year
             self._legacy.create_tables(current_year)
@@ -304,7 +318,7 @@ class CFFEXUnifiedDownloader:
                     if parse_result.record_count > 0:
                         self.save_unified(parse_result)
                 except Exception as e:
-                    self.logger.warning(f"Dual-write failed for {r.file_path}: {e}")
+                    self.logger.warning(f"Save to unified failed for {r.file_path}: {e}")
 
         return self._summarize_results(results)
 
@@ -342,11 +356,6 @@ class CFFEXUnifiedDownloader:
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def close(self):
-        if self._legacy:
-            try:
-                self._legacy.close()
-            except Exception:
-                pass
         self._pool.close()
 
     def __enter__(self):

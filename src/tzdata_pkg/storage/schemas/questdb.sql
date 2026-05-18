@@ -1,5 +1,27 @@
 -- QuestDB schema for time-series market data
 -- Optimized for high-performance time-series queries
+-- Tables created via HTTP exec endpoint on QuestDB startup
+
+-- 日线行情 (daily quotes)
+CREATE TABLE IF NOT EXISTS daily_quotes (
+    ts TIMESTAMP,                                -- 交易日 00:00 UTC
+    exchange SYMBOL,                             -- CFFEX, SHFE, etc.
+    contract_code SYMBOL,
+    product_code SYMBOL,
+    open DOUBLE,
+    high DOUBLE,
+    low DOUBLE,
+    close DOUBLE,
+    settle DOUBLE,
+    prev_settle DOUBLE,
+    volume LONG,
+    turnover DOUBLE,
+    open_interest LONG,
+    daily_change DOUBLE,
+    daily_change_pct DOUBLE,
+    amplitude DOUBLE,
+    source SYMBOL                                -- exchange, tushare, akshare
+) TIMESTAMP(ts) PARTITION BY YEAR;
 
 -- 指数分钟线
 CREATE TABLE IF NOT EXISTS index_minute (

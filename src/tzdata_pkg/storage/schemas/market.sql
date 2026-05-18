@@ -554,3 +554,86 @@ CREATE TABLE IF NOT EXISTS beat_task_log (
 
 CREATE INDEX IF NOT EXISTS idx_beat_task_name ON beat_task_log(task_name);
 CREATE INDEX IF NOT EXISTS idx_beat_task_time ON beat_task_log(executed_at DESC);
+
+-- ============================================================
+-- Realtime Market Data (实时行情数据)
+-- ============================================================
+
+-- market_data_catalog: symbol-level subscription management
+CREATE TABLE IF NOT EXISTS market_data_catalog (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL UNIQUE,           -- IM2406, MO2406C3900
+    product_id TEXT NOT NULL,              -- IM_FUT, MO_OPT
+    exchange TEXT NOT NULL,                -- CFFEX
+    asset_type TEXT NOT NULL,              -- FUTURE / OPTION / INDEX
+    is_active INTEGER DEFAULT 1,           -- 1=enabled, 0=disabled
+    real_time_source TEXT,                 -- ctp, itick
+    backup_source TEXT,                    -- itick (nullable)
+    historical_source TEXT DEFAULT 'tushare', -- tushare, akshare
+    subscribe_from TEXT,                   -- YYYY-MM-DD (contract listing date)
+    subscribe_until TEXT,                  -- YYYY-MM-DD (contract expiry)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_rtsymbol ON market_data_catalog(symbol);
+CREATE INDEX IF NOT EXISTS idx_catalog_rtactive ON market_data_catalog(is_active);
+CREATE INDEX IF NOT EXISTS idx_catalog_rtexchange ON market_data_catalog(exchange);
+CREATE INDEX IF NOT EXISTS idx_catalog_rtasset ON market_data_catalog(asset_type);
+
+-- data_source_status: real-time connection status for each source
+CREATE TABLE IF NOT EXISTS data_source_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name TEXT NOT NULL UNIQUE,      -- tushare, akshare, ctp, itick, qq_finance
+    source_type TEXT NOT NULL,             -- historical, realtime, transition
+    status TEXT DEFAULT 'disconnected',    -- connected, disconnected, degraded, error
+    last_heartbeat TIMESTAMP,
+    latency_ms INTEGER DEFAULT 0,          -- P50 latency in ms
+    latency_p99_ms INTEGER DEFAULT 0,
+    error_count INTEGER DEFAULT 0,
+    last_error TEXT,
+    symbols_subscribed INTEGER DEFAULT 0,  -- count of active subscriptions
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- market_data_event_log: structured lifecycle events (90-day retention)
+CREATE TABLE IF NOT EXISTS market_data_event_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,              -- connect, disconnect, reconnect, switch, backfill, gap, snapshot
+    source_name TEXT NOT NULL,
+    symbol TEXT,
+    severity TEXT DEFAULT 'info',          -- info, warning, error, critical
+    message TEXT,
+    details TEXT,                          -- JSON
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_event_log_rttype ON market_data_event_log(event_type);
+CREATE INDEX IF NOT EXISTS idx_event_log_rtsource ON market_data_event_log(source_name);
+CREATE INDEX IF NOT EXISTS idx_event_log_rttime ON market_data_event_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_event_log_rtseverity ON market_data_event_log(severity);
+
+-- data_quality_metrics: per-symbol quality scores
+CREATE TABLE IF NOT EXISTS data_quality_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    trade_date TEXT NOT NULL,              -- YYYY-MM-DD
+    source_name TEXT NOT NULL,
+    delay_ms INTEGER DEFAULT 0,            -- average delay
+    gap_count INTEGER DEFAULT 0,           -- number of gaps detected
+    missing_bars INTEGER DEFAULT 0,        -- expected vs received
+    suspect_count INTEGER DEFAULT 0,       -- flagged as suspect
+    quality_score REAL DEFAULT 100.0,      -- 0-100
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(symbol, trade_date, source_name)
+);
+CREATE INDEX IF NOT EXISTS idx_quality_rtsymbol ON data_quality_metrics(symbol);
+CREATE INDEX IF NOT EXISTS idx_quality_rtdate ON data_quality_metrics(trade_date);
+
+-- realtime_snapshots_cache: in-SQLite mirror of Redis latest snapshots
+CREATE TABLE IF NOT EXISTS realtime_snapshots_cache (
+    symbol TEXT PRIMARY KEY,
+    data_json TEXT NOT NULL,               -- JSON serialized UnifiedMarketData
+    source_name TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_snapshot_rtupdated ON realtime_snapshots_cache(updated_at DESC);

@@ -178,17 +178,15 @@ def get_cfmmc_config() -> Dict[str, Any]:
 # Database path constants (derived from get_data_dir)
 DATA_DIR = get_data_dir()
 
-# Legacy DB paths (deprecated, kept for migration)
-CFFEX_DB = DATA_DIR / "cffex.db"
-CFFEX_HOLDINGS_DB = DATA_DIR / "cffex_holdings.db"
-CFFEX_MINUTE_DB = DATA_DIR / "cffex_minute_data.db"
-SHFE_DB = DATA_DIR / "shfe.db"
-TUSHARE_DB = DATA_DIR / "tushare" / "options.db"
-BILLS_DB = DATA_DIR / "bills.db"
-TRADING_DB = DATA_DIR / "trading.db"
-INSTITUTION_DB = DATA_DIR / "institution.db"
-
-# Unified DB paths (new 3-DB architecture)
+# Unified DB paths (3-DB architecture)
 TZDATA_MARKET_DB = DATA_DIR / "tzdata_market.db"
 TZDATA_TRADING_DB = DATA_DIR / "tzdata_trading.db"
 TZDATA_ANALYSIS_DB = DATA_DIR / "tzdata_analysis.db"
+
+# Legacy DB paths (deprecated — all migrated and deleted 2026-05-18)
+# Aliases kept for backward compatibility.
+BILLS_DB = TZDATA_TRADING_DB  # was bills.db
+INSTITUTION_DB = TZDATA_ANALYSIS_DB  # was institution.db
+TRADING_DB = DATA_DIR / "trading.db"
+CFFEX_HOLDINGS_DB = DATA_DIR / "cffex_holdings.db"
+TUSHARE_DB = DATA_DIR / "tushare" / "options.db"

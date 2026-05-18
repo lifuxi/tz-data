@@ -142,7 +142,7 @@ def sync_underlying_daily(
         dict with per-underlying sync results.
     """
     if underlyings is None:
-        underlyings = ['000852', 'IM', '512100', 'A00', '510050', '510300']
+        underlyings = ['000852', '000905', 'IM', 'A50', '512100', '510050', '510300']
 
     now = date.today()
     conn = None
@@ -169,7 +169,10 @@ def sync_underlying_daily(
             else:
                 start_date = (now - timedelta(days=365)).isoformat()
 
-    conn = None
+    finally:
+        if conn:
+            conn.close()
+
     results = {}
 
     try:
@@ -257,9 +260,21 @@ def _fetch_underlying(ak, code: str) -> pd.DataFrame:
         from tzdata_pkg.download.akshare.client import AkshareClient
         return AkshareClient().fetch_etf_daily('512100', start_date=sd, end_date=ed)
 
-    elif code == 'A00':
+    elif code == 'A50':
         # SGX FTSE China A50
         return ak.futures_foreign_hist(symbol='FEF')
+
+    elif code == 'A00':
+        # Legacy alias for A50
+        return ak.futures_foreign_hist(symbol='FEF')
+
+    elif code == '000905':
+        # CSI 500 index
+        df = ak.stock_zh_index_daily(symbol='sh000905')
+        if df is not None and not df.empty and 'volume' in df.columns:
+            df = df.copy()
+            df['volume'] = df['volume'] / 100
+        return df
 
     elif code == '510050':
         # 50ETF (HO underlying)

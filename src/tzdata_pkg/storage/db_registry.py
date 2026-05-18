@@ -1,7 +1,9 @@
 """
 Database path registry and initialization.
 Manages paths for the 3 unified databases and provides connection pools.
+Also manages the QuestDB time-series database connection.
 """
+import os
 from pathlib import Path
 
 from tzdata_pkg.config import get_data_dir
@@ -22,6 +24,7 @@ class DBRegistry:
         self.data_dir = Path(data_dir) if data_dir else get_data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._pools: dict[str, SQLitePool] = {}
+        self._questdb_conn = None
 
     @property
     def market_db_path(self) -> Path:
@@ -78,8 +81,69 @@ class DBRegistry:
         finally:
             conn.close()
 
+    def get_questdb_connection(self):
+        """Get QuestDB connection via PostgreSQL wire protocol (psycopg2).
+
+        QuestDB exposes PostgreSQL-compatible SQL interface on port 8812.
+        Connection params from env: QUESTDB_HOST, QUESTDB_PORT, QUESTDB_DB.
+        """
+        if self._questdb_conn is None:
+            import psycopg2
+            host = os.getenv("QUESTDB_HOST", "localhost")
+            port = int(os.getenv("QUESTDB_PORT", "8812"))
+            dbname = os.getenv("QUESTDB_DB", "questdb")
+            self._questdb_conn = psycopg2.connect(
+                host=host,
+                port=port,
+                user="admin",
+                password="quest",
+                dbname=dbname,
+            )
+            self._questdb_conn.autocommit = True
+        return self._questdb_conn
+
+    def close_questdb(self):
+        """Close QuestDB connection."""
+        if self._questdb_conn is not None:
+            self._questdb_conn.close()
+            self._questdb_conn = None
+
     def close_all(self) -> None:
-        """Close all connection pools."""
+        """Close all connection pools and QuestDB connection."""
         for pool in self._pools.values():
             pool.close_all()
         self._pools.clear()
+        self.close_questdb()
+
+    def init_questdb_schema(self) -> bool:
+        """Initialize QuestDB tables via HTTP API (port 9000).
+
+        QuestDB doesn't support CREATE TABLE IF NOT EXISTS via PostgreSQL wire
+        protocol for all table types, so we use the REST exec endpoint.
+        Returns True if initialization succeeded, False if QuestDB is unavailable.
+        """
+        try:
+            import httpx
+            host = os.getenv("QUESTDB_HOST", "localhost")
+            port = os.getenv("QUESTDB_HTTP_PORT", "9000")
+            schema_path = Path(__file__).parent / "schemas" / "questdb.sql"
+            if not schema_path.exists():
+                return False
+
+            sql_text = schema_path.read_text(encoding="utf-8")
+            # QuestDB exec endpoint takes a single statement at a time
+            statements = [s.strip() for s in sql_text.split(";") if s.strip()]
+
+            for stmt in statements:
+                resp = httpx.get(
+                    f"http://{host}:{port}/exec",
+                    params={"query": stmt},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+
+            return True
+        except ImportError:
+            return False
+        except Exception:
+            return False

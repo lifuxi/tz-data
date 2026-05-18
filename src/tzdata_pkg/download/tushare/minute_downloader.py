@@ -112,9 +112,10 @@ class TushareMinuteDownloader(BaseExchangeDownloader):
         return total_stored
 
     def _store_data(self, df: pd.DataFrame) -> int:
-        """Store minute data to unified minute_quotes table."""
+        """Store minute data to unified minute_quotes table + QuestDB."""
         contract_code = self.ts_code.split(".")[0] if "." in self.ts_code else self.ts_code
         count = 0
+        quotes_for_questdb = []
 
         with self._market_pool.transaction() as conn:
             for _, row in df.iterrows():
@@ -145,10 +146,40 @@ class TushareMinuteDownloader(BaseExchangeDownloader):
                         self._safe_int(row.get("oi")),
                     ))
                     count += 1
+
+                    # Collect for QuestDB dual-write
+                    quotes_for_questdb.append({
+                        "trade_date": trade_date,
+                        "trade_time": trade_time,
+                        "open": self._safe_float(row.get("open")),
+                        "high": self._safe_float(row.get("high")),
+                        "low": self._safe_float(row.get("low")),
+                        "close": self._safe_float(row.get("close")),
+                        "volume": self._safe_int(row.get("vol")),
+                        "turnover": self._safe_float(row.get("amount")),
+                        "open_interest": self._safe_int(row.get("oi")),
+                        "source": "tushare",
+                    })
                 except Exception as e:
                     self.logger.warning(f"Failed to store minute bar: {e}")
 
         self.logger.info(f"Stored {count} minute bars for {self.ts_code}")
+
+        # Dual-write to QuestDB (non-blocking, silent failure)
+        if quotes_for_questdb:
+            try:
+                from tzdata_pkg.storage.questdb_store import QuestDBStore
+                product_code = contract_code[:2] if len(contract_code) >= 2 else contract_code
+                QuestDBStore.insert_minute_quotes(
+                    exchange="CFFEX",
+                    contract_code=contract_code,
+                    product_code=product_code,
+                    quotes=quotes_for_questdb,
+                    frequency=self.freq,
+                )
+            except Exception:
+                pass
+
         return count
 
     def _parse_date_range(self, date_str: str) -> tuple:

@@ -119,6 +119,31 @@ const routes = [
         name: 'NotificationConfig',
         component: () => import('@/views/NotificationConfig.vue'),
         meta: { title: '通知配置', icon: 'ChatDotRound', group: '系统', order: 125 }
+      },
+      // ===== 实时行情采集 =====
+      {
+        path: '/market-catalog',
+        name: 'MarketCatalog',
+        component: () => import('@/views/MarketCatalogList.vue'),
+        meta: { title: '数据目录', icon: 'List', group: '实时行情采集', order: 200 }
+      },
+      {
+        path: '/source-status',
+        name: 'SourceStatus',
+        component: () => import('@/views/SourceStatus.vue'),
+        meta: { title: '数据源状态', icon: 'Connection', group: '实时行情采集', order: 210 }
+      },
+      {
+        path: '/quality-dashboard',
+        name: 'QualityDashboard',
+        component: () => import('@/views/QualityDashboard.vue'),
+        meta: { title: '质量看板', icon: 'DataAnalysis', group: '实时行情采集', order: 220 }
+      },
+      {
+        path: '/event-log',
+        name: 'MarketEventLog',
+        component: () => import('@/views/MarketEventLog.vue'),
+        meta: { title: '采集日志', icon: 'Document', group: '实时行情采集', order: 230 }
       }
     ]
   }

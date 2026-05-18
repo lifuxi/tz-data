@@ -13,6 +13,9 @@ from tzdata_pkg.api.routes.analysis import router as analysis_router
 from tzdata_pkg.api.routes.admin import router as admin_router
 from tzdata_pkg.api.routes.maintenance import router as maintenance_router
 from tzdata_pkg.api.routes.data_layer import router as data_layer_router
+from tzdata_pkg.api.routes.v2 import router as v2_router
+
+from tzdata_pkg.api.routes.realtime_market import router as realtime_market_router
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,22 @@ async def lifespan(app: FastAPI):
         logger.info("CalendarCache preloaded on startup")
     except Exception as e:
         logger.warning(f"CalendarCache preload failed: {e}")
+
+    # Startup: initialize realtime market data adapter
+    try:
+        from tzdata_pkg.cache.redis_cache import RedisCache
+        from tzdata_pkg.market.adapter import MarketDataAdapter
+        from tzdata_pkg.storage.db_registry import DBRegistry
+
+        db_pool = DBRegistry().get_pool("market")
+        redis = RedisCache()
+        adapter = MarketDataAdapter(db_pool=db_pool, redis_client=redis)
+        await adapter.initialize()
+        app.state.market_adapter = adapter
+        logger.info("MarketDataAdapter initialized on startup")
+    except Exception as e:
+        logger.warning(f"MarketDataAdapter init failed: {e}")
+
     yield
 
 
@@ -65,3 +84,7 @@ app.include_router(analysis_router, prefix="/api/v1", tags=["analysis"])
 app.include_router(admin_router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(maintenance_router)  # maintenance_router already has prefix
 app.include_router(data_layer_router, prefix="/api/v1")
+app.include_router(v2_router, prefix="/api/v2", tags=["v2-shared"])
+
+# Realtime market data routes (12 new endpoints)
+app.include_router(realtime_market_router, prefix="/api/v1/market", tags=["realtime-market"])

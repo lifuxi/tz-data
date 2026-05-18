@@ -1,6 +1,6 @@
 # 系统架构
 
-> 版本：v0.7.0 | 最后更新：2026-05-15
+> 版本：v0.8.0 | 最后更新：2026-05-18
 
 ## 整体架构
 
@@ -25,16 +25,17 @@
 │                     存储层 (Storage)                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
 │  │market_store  │  │trading_store │  │analysis_store        │   │
-│  │SQLite Pool   │  │SQLite Pool   │  │SQLite Pool           │   │
+│  │SQLite+QuestDB│  │SQLite Pool   │  │SQLite Pool           │   │
 │  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘   │
 └─────────┼─────────────────┼─────────────────────┼───────────────┘
           │                 │                     │
 ┌─────────▼─────────────────▼─────────────────────▼───────────────┐
-│                    数据库层 (SQLite)                              │
+│                  数据库层 (SQLite + QuestDB)                      │
 │  ┌───────────────────┐ ┌──────────────────┐ ┌────────────────┐ │
-│  │tzdata_market.db   │ │tzdata_trading.db │ │tzdata_analysis.│ │
-│  │~20 表, ~1.6M 行   │ │~30 表, ~923K 行  │ │db ~18 表       │ │
-│  └───────────────────┘ └──────────────────┘ └────────────────┘ │
+│  │tzdata_market.db   │ │tzdata_trading.db │ │   QuestDB      │ │
+│  │~20 表, ~1.6M 行   │ │~30 表, ~923K 行  │ │ future_minute  │ │
+│  └───────────────────┘ └──────────────────┘ │ daily_quotes   │ │
+│                                              └────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
           │                 │                     │
 ┌─────────▼─────────────────▼─────────────────────▼───────────────┐
@@ -138,6 +139,7 @@ CFMMC 网站 (Selenium 自动登录)
 | Celery + Redis | — | 分布式任务队列 |
 | APScheduler | — | 下载任务调度 |
 | SQLite | WAL 模式 | 主数据库 |
+| QuestDB | 9.3.5 | 时序数据库（可选） |
 | requests/httpx | — | HTTP 请求 |
 | pandas/numpy | — | 数据处理 |
 | BeautifulSoup4 | — | HTML 解析 |
@@ -163,24 +165,27 @@ CFMMC 网站 (Selenium 自动登录)
 
 ```
 src/tzdata_pkg/
-├── api/              # FastAPI 路由（7 个路由模块）
+├── api/              # FastAPI 路由（8 个路由模块）
 │   ├── server.py     # 应用入口
 │   └── routes/
-│       ├── market.py       # /api/v1/market/*
-│       ├── positions.py    # /api/v1/positions/*
-│       ├── trading.py      # /api/v1/bills, /trades, /pnl
-│       ├── analysis.py     # /api/v1/signals, /regime
-│       ├── admin.py        # /api/v1/admin/*
-│       ├── maintenance.py  # /api/maintenance/* (~60 端点)
-│       └── data_layer.py   # /api/v1/bills/*/fund-flows 等
+│       ├── market.py         # /api/v1/market/*
+│       ├── positions.py      # /api/v1/positions/*
+│       ├── trading.py        # /api/v1/bills, /trades, /pnl
+│       ├── analysis.py       # /api/v1/signals, /regime
+│       ├── admin.py          # /api/v1/admin/*
+│       ├── maintenance.py    # /api/maintenance/* (~60 端点)
+│       ├── data_layer.py     # /api/v1/bills/*/fund-flows 等
+│       ├── realtime_market.py  # 实时行情 API
+│       └── v2.py             # /api/v2/* （含多周期频率查询）
 ├── core/             # 基础设施
 │   ├── db.py         # SQLite 连接池
 │   ├── exceptions.py # 自定义异常
 │   ├── constants.py  # 交易所代码、品种定义
 │   └── monitoring.py # 告警管理
 ├── storage/          # 存储层
-│   ├── db_registry.py      # 数据库注册与连接
+│   ├── db_registry.py      # 数据库注册与连接（含 QuestDB）
 │   ├── market_store.py     # 市场数据 CRUD
+│   ├── questdb_store.py    # QuestDB 时序存储
 │   ├── trading_store.py    # 交易数据 CRUD
 │   ├── analysis_store.py   # 分析数据 CRUD
 │   └── schemas/            # SQL 建表脚本
@@ -203,10 +208,14 @@ src/tzdata_pkg/
 │   ├── monitoring/   # 健康快照/质量评估
 │   ├── statements/   # 账单解析/开平匹配
 │   ├── sources/      # 数据源管理
-│   └── sync/         # 同步控制
+│   ├── sync/         # 同步控制
+│   └── analysis/     # 行情分析（重采样、机构、市场状态、信号）
 ├── parser/           # 账单 HTML 解析
 ├── verify/           # 数据校验
 ├── migration/        # 12→3 库迁移工具
+├── market/           # 行情模块（事件日志、质量校验、状态服务）
+├── analysis/         # 分析模块（HV 计算、IV 基准下载）
+├── models/           # 数据模型（交易模型、版本模型）
 ├── cli/              # CLI 脚本
 └── config.py         # 配置管理
 ```

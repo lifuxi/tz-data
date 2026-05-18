@@ -43,13 +43,28 @@ def _write_log(task_name: str, scheduled_at: str, status: str,
                duration_ms: int, error: str | None):
     """Write execution log to beat_task_log table."""
     try:
-        from tzdata_pkg.storage.db_registry import DBRegistry
-        pool = DBRegistry().get_pool('market')
-        with pool.transaction() as conn:
+        import sqlite3
+        from tzdata_pkg.config import TZDATA_TRADING_DB
+        conn = sqlite3.connect(str(TZDATA_TRADING_DB))
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS beat_task_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_name TEXT NOT NULL,
+                    scheduled_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    duration_ms INTEGER,
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.execute("""
                 INSERT INTO beat_task_log
                     (task_name, scheduled_at, status, duration_ms, error)
                 VALUES (?, ?, ?, ?, ?)
             """, (task_name, scheduled_at, status, duration_ms, error))
+            conn.commit()
+        finally:
+            conn.close()
     except Exception as e:
         logger.debug(f"Failed to write beat_task_log: {e}")
