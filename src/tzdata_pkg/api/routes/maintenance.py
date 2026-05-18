@@ -1524,28 +1524,36 @@ def confirm_statement(req: ConfirmStatementRequest):
 
         pool = DBRegistry().get_pool('trading')
         with pool.transaction() as conn:
-            # Insert into bills table
+            # Insert into bills table — match actual schema column names
             cursor = conn.execute("""
                 INSERT INTO bills (
                     account_id, bill_date_start, bill_date_end, file_path,
                     status, client_name, currency,
                     balance_bf, balance_cf, client_equity,
-                    deposit, withdrawal, realized_pnl, commission
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    deposit_withdrawal, realized_pl, mtm_pl, commission,
+                    premium_received, premium_paid, fund_available, margin_occupied,
+                    total_records, parse_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                req.account_id,
+                req.account_id or parsed.get('client_id', ''),
                 bill_date,
                 bill_date,
                 req.file_path,
                 'parsed',
-                None,
+                parsed.get('client_name', ''),
                 'CNY',
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                summary.get('balance_bf'),
+                summary.get('balance_cf'),
+                summary.get('client_equity'),
+                summary.get('deposit_withdrawal'),
+                summary.get('realized_pnl'),
+                summary.get('mtm_pnl'),
+                summary.get('commission'),
+                summary.get('premium_received'),
+                summary.get('premium_paid'),
+                summary.get('fund_available'),
+                summary.get('margin_occupied'),
+                len(parsed.get('trades', [])),
                 None,
             ))
             bill_id = cursor.lastrowid
