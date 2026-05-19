@@ -1503,7 +1503,7 @@ class ConfirmStatementRequest(BaseModel):
 
 @router.post("/statements/confirm", summary="确认提交账单")
 def confirm_statement(req: ConfirmStatementRequest):
-    """Step 3: 将已解析的账单数据提交到数据库。"""
+    """Step 3: 将已解析的账单数据提交到数据库（含 bills + trades）。"""
     from tzdata_pkg.maintenance.statements.parsers.cfmmc_parser import CFMMCParser
     from tzdata_pkg.storage.db_registry import DBRegistry
     import re
@@ -1524,7 +1524,7 @@ def confirm_statement(req: ConfirmStatementRequest):
 
         pool = DBRegistry().get_pool('trading')
         with pool.transaction() as conn:
-            # Insert into bills table — match actual schema column names
+            # Insert into bills table
             cursor = conn.execute("""
                 INSERT INTO bills (
                     account_id, bill_date_start, bill_date_end, file_path,
@@ -1558,11 +1558,96 @@ def confirm_statement(req: ConfirmStatementRequest):
             ))
             bill_id = cursor.lastrowid
 
+            # Insert trade records into trades table
+            account_id = req.account_id or parsed.get('client_id', '')
+            direction_map = {'买': 'buy', '卖': 'sell', '买入': 'buy', '卖出': 'sell'}
+            offset_map = {'开': 'open', '平': 'close', '开仓': 'open', '平仓': 'close'}
+
+            trade_cols = [c[1] for c in conn.execute("PRAGMA table_info(trades)").fetchall()]
+            has_extra = all(c in trade_cols for c in ['trade_time', 'order_type', 'strategy_tag'])
+
+            trades_inserted = 0
+            for t in parsed.get('trades', []):
+                trade_date_raw = str(t.get('trade_date', ''))
+                if len(trade_date_raw) >= 8 and trade_date_raw[:4].isdigit():
+                    # YYYYMMDD format
+                    trade_date = trade_date_raw[:8]
+                elif '-' in trade_date_raw:
+                    trade_date = trade_date_raw[:10].replace('-', '')
+                else:
+                    continue
+
+                direction = direction_map.get(t.get('direction', ''), t.get('direction', ''))
+                offset_flag = offset_map.get(t.get('open_close', ''), t.get('open_close', ''))
+                instrument = t.get('contract', '')
+                instrument_type = 'option' if '-' in instrument and ('C' in instrument or 'P' in instrument) else 'future'
+
+                if has_extra:
+                    conn.execute(
+                        """INSERT INTO trades (
+                           account_id, year, month, trade_date, exchange, product,
+                           instrument, direction, offset_flag, volume, price, turnover,
+                           commission, total_pnl, premium, trade_id, position_type,
+                           trade_time, order_type, strategy_tag)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            account_id,
+                            int(trade_date[:4]),
+                            int(trade_date[4:6]),
+                            trade_date,
+                            t.get('exchange', ''),
+                            t.get('product', ''),
+                            instrument,
+                            direction,
+                            offset_flag,
+                            t.get('volume', 0),
+                            t.get('price', 0),
+                            t.get('turnover', 0),
+                            t.get('commission', 0),
+                            t.get('realized_pnl', 0),
+                            t.get('premium', 0),
+                            t.get('trans_no', ''),
+                            instrument_type,
+                            '',  # trade_time
+                            '',  # order_type
+                            None,  # strategy_tag
+                        )
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO trades (
+                           account_id, year, month, trade_date, exchange, product,
+                           instrument, direction, offset_flag, volume, price, turnover,
+                           commission, total_pnl, premium, trade_id, position_type)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            account_id,
+                            int(trade_date[:4]),
+                            int(trade_date[4:6]),
+                            trade_date,
+                            t.get('exchange', ''),
+                            t.get('product', ''),
+                            instrument,
+                            direction,
+                            offset_flag,
+                            t.get('volume', 0),
+                            t.get('price', 0),
+                            t.get('turnover', 0),
+                            t.get('commission', 0),
+                            t.get('realized_pnl', 0),
+                            t.get('premium', 0),
+                            t.get('trans_no', ''),
+                            instrument_type,
+                        )
+                    )
+                trades_inserted += 1
+
         return {
             "success": True,
             "bill_id": bill_id,
             "bill_date": bill_date,
             "trade_count": len(parsed.get('trades', [])),
+            "trades_inserted": trades_inserted,
             "position_count": len(parsed.get('positions', [])),
         }
 
