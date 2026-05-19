@@ -28,7 +28,7 @@ start "Celery Worker" cmd /k "cd /d %~dp0 && call %VENV_ACTIVATE% && celery -A t
 
 timeout /t 3 /nobreak >NUL
 
-echo [2/5] 启动 Celery Beat (定时调度)...
+echo [2/5] 启动 Celery Beat (redbeat)...
 start "Celery Beat" cmd /k "cd /d %~dp0 && call %VENV_ACTIVATE% && celery -A tzdata_pkg.scheduler.celery_app beat --loglevel=info"
 
 timeout /t 2 /nobreak >NUL

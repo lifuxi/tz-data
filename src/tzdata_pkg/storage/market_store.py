@@ -207,3 +207,35 @@ class MarketStore:
                 ))
                 count += 1
         return count
+
+    def save_minute_quotes(self, rows: list[dict]) -> int:
+        """Insert or replace minute quotes. Returns count."""
+        if not rows:
+            return 0
+        pool = self.registry.get_pool("market")
+        count = 0
+        with pool.transaction() as conn:
+            for r in rows:
+                conn.execute("""
+                    INSERT INTO minute_quotes
+                        (exchange, contract_code, trade_date, trade_time,
+                         open, high, low, close, volume, turnover,
+                         open_interest, frequency, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(exchange, contract_code, trade_date, trade_time)
+                    DO UPDATE SET
+                        open=excluded.open, high=excluded.high, low=excluded.low,
+                        close=excluded.close, volume=excluded.volume,
+                        turnover=excluded.turnover, open_interest=excluded.open_interest,
+                        frequency=excluded.frequency, source=excluded.source
+                """, (
+                    r.get("exchange", ""), r.get("contract_code", ""),
+                    r.get("trade_date", ""), r.get("trade_time", ""),
+                    r.get("open"), r.get("high"), r.get("low"), r.get("close"),
+                    r.get("volume", 0), r.get("turnover", 0),
+                    r.get("open_interest", 0),
+                    r.get("frequency", "1min"),
+                    r.get("source", "tushare"),
+                ))
+                count += 1
+        return count

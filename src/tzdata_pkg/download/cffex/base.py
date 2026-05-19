@@ -26,15 +26,19 @@ class CFFEXDownloader(ABC):
     """CFFEX downloader base class."""
 
     def __init__(self, config: dict = None):
-        self.config = config or {}
+        from tzdata_pkg.config import get_cffex_config
+
+        self.config = config or get_cffex_config()
         self.url_builder = CFFEXURLBuilder(self.config.get("base_url", "http://www.cffex.com.cn/sj/"))
         self.csv_parser = CFFEXCSVParser()
 
-        storage = self.config["storage"]
-        self.csv_dir = Path(storage["csv_dir"])
-        self.db_path = Path(storage["db_path"])
-        self.log_dir = Path(storage["log_dir"])
-        self.checksum_file = Path(storage["checksum_file"])
+        storage = self.config.get("storage", {})
+        if not storage:
+            raise ValueError("config['storage'] is required with keys: csv_dir, db_path, log_dir, checksum_file")
+        self.csv_dir = Path(storage.get("csv_dir", ""))
+        self.db_path = Path(storage.get("db_path", ""))
+        self.log_dir = Path(storage.get("log_dir", ""))
+        self.checksum_file = Path(storage.get("checksum_file", ""))
 
         self.csv_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

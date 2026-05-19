@@ -12,7 +12,7 @@ start "Celery Worker" cmd /k "cd /d %~dp0 && call %VENV_ACTIVATE% && celery -A t
 
 timeout /t 3 /nobreak >NUL
 
-REM 启动 Celery Beat (定时任务调度)
+REM 启动 Celery Beat (定时任务调度) — redbeat 已在 celery_app.py 配置，无需 --scheduler 参数
 start "Celery Beat" cmd /k "cd /d %~dp0 && call %VENV_ACTIVATE% && celery -A tzdata_pkg.scheduler.celery_app beat --loglevel=info"
 
 timeout /t 2 /nobreak >NUL

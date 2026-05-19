@@ -31,7 +31,7 @@ def _sync_position_for_product(product: str) -> dict:
 
         downloader = CFFEXPositionDownloader(product=product)
         try:
-            result = downloader.download_incremental(save_csv=True)
+            result = downloader.download_incremental()
             total_records = result.get('total_records', 0)
 
             # Sync latest day's data to unified position_detail table

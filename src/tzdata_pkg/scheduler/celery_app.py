@@ -18,8 +18,11 @@ celery_app = Celery(
 
 # Celery configuration
 celery_app.conf.update(
+    beat_scheduler='redbeat.RedBeatScheduler',
     beat_scheduler_lock='celery_beat_lock',
+    beat_scheduler_lock_timeout=60,
     beat_max_loop_interval=5,
+    redbeat_key_prefix='redbeat:',
     task_serializer='json',
     accept_content=['json'],
     result_serializer='json',
@@ -111,6 +114,12 @@ celery_app.conf.update(
         'mo-contract-sync': {
             'task': 'tzdata_pkg.scheduler.tasks.mo_tasks.sync_mo_contracts',
             'schedule': crontab(hour=10, minute=0, day_of_week='sat'),
+        },
+
+        # 每周六 03:00 全量数据质量审计
+        'weekly-full-audit': {
+            'task': 'tzdata_pkg.scheduler.tasks.check_tasks.weekly_full_audit',
+            'schedule': crontab(hour=3, minute=0, day_of_week='sat'),
         },
 
         # ============================================================

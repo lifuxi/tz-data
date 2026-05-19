@@ -2441,3 +2441,110 @@ def get_beat_task_log(days: int = 7):
 
     return {'success': True, 'data': {'tasks': result, 'window_days': days}}
 
+
+# === Data Quality Audit ===
+
+_last_audit_cache: dict = {}
+
+
+@router.get("/quality/summary", summary="质量审计摘要")
+def get_quality_summary():
+    """Return the latest quality audit summary."""
+    if _last_audit_cache:
+        return {
+            "success": True,
+            "timestamp": _last_audit_cache.get("timestamp"),
+            "overall_status": _last_audit_cache.get("overall_status"),
+            "total_checks": _last_audit_cache.get("total_checks"),
+            "passed": _last_audit_cache.get("passed"),
+            "failed": _last_audit_cache.get("failed"),
+            "warnings": _last_audit_cache.get("warnings"),
+            "skipped": _last_audit_cache.get("skipped"),
+            "cached": True,
+        }
+
+    from tzdata_pkg.verify.data_quality_auditor import DataQualityAuditor
+
+    auditor = DataQualityAuditor()
+    report = auditor.run_full_audit(scope="all")
+
+    _last_audit_cache.update({
+        "timestamp": report.timestamp,
+        "overall_status": report.overall_status,
+        "total_checks": report.total_checks,
+        "passed": report.passed,
+        "failed": report.failed,
+        "warnings": report.warnings,
+        "skipped": report.skipped,
+    })
+
+    return {
+        "success": True,
+        **_last_audit_cache,
+        "cached": False,
+    }
+
+
+@router.get("/quality/detail", summary="质量审计详情")
+def get_quality_detail():
+    """Return full quality audit detail."""
+    from tzdata_pkg.verify.data_quality_auditor import DataQualityAuditor
+
+    auditor = DataQualityAuditor()
+    report = auditor.run_full_audit(scope="all")
+
+    return {
+        "success": True,
+        "timestamp": report.timestamp,
+        "overall_status": report.overall_status,
+        "total_checks": report.total_checks,
+        "passed": report.passed,
+        "failed": report.failed,
+        "warnings": report.warnings,
+        "skipped": report.skipped,
+        "checks": [
+            {
+                "name": c.name,
+                "status": c.status,
+                "source": c.source,
+                "expected": c.expected,
+                "actual": c.actual,
+                "deviation": c.deviation,
+                "message": c.message,
+            }
+            for c in report.checks
+        ],
+    }
+
+
+@router.post("/quality/trigger", summary="手动触发审计")
+def trigger_quality_audit(scope: str = "all", background_tasks: BackgroundTasks = None):
+    """Trigger a quality audit (can be async via background tasks)."""
+    from tzdata_pkg.verify.data_quality_auditor import DataQualityAuditor
+
+    auditor = DataQualityAuditor()
+    report = auditor.run_full_audit(scope=scope)
+
+    _last_audit_cache.clear()
+    _last_audit_cache.update({
+        "timestamp": report.timestamp,
+        "overall_status": report.overall_status,
+        "total_checks": report.total_checks,
+        "passed": report.passed,
+        "failed": report.failed,
+        "warnings": report.warnings,
+        "skipped": report.skipped,
+    })
+
+    return {
+        "success": True,
+        "scope": scope,
+        "timestamp": report.timestamp,
+        "overall_status": report.overall_status,
+        "total_checks": report.total_checks,
+        "passed": report.passed,
+        "failed": report.failed,
+        "warnings": report.warnings,
+        "skipped": report.skipped,
+    }
+

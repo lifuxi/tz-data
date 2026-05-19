@@ -30,25 +30,28 @@ def pre_market_snapshot(self):
         # Force refresh from primary source
         from tzdata_pkg.market.drivers.qq_finance_driver import QQFinanceDriver
         import asyncio
-        import time
 
         driver = QQFinanceDriver()
-        asyncio.get_event_loop().run_until_complete(driver.connect({"poll_interval": 2}))
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(driver.connect({"poll_interval": 2}))
 
-        refreshed = 0
-        for symbol in symbols:
-            try:
-                async def _fetch():
-                    await driver.subscribe([symbol])
-                    await asyncio.sleep(1)  # wait for one poll cycle
-                    await driver.unsubscribe([symbol])
+            refreshed = 0
+            for symbol in symbols:
+                try:
+                    async def _fetch():
+                        await driver.subscribe([symbol])
+                        await asyncio.sleep(1)  # wait for one poll cycle
+                        await driver.unsubscribe([symbol])
 
-                asyncio.get_event_loop().run_until_complete(_fetch())
-                refreshed += 1
-            except Exception:
-                pass
+                    loop.run_until_complete(_fetch())
+                    refreshed += 1
+                except Exception:
+                    pass
 
-        asyncio.get_event_loop().run_until_complete(driver.disconnect())
+            loop.run_until_complete(driver.disconnect())
+        finally:
+            loop.close()
 
         # Log event
         with pool.transaction() as conn:

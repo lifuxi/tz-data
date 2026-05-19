@@ -239,7 +239,7 @@ def sync_mo_minute():
         return {'status': 'skipped', 'reason': 'non-trading day'}
 
     audit.log_start(task_id, 'mo-minute-sync', sync_mode='incremental',
-                    exchange='CFFEX', product='MO', data_type='minute')
+                    exchange='CFFEX', product='MO')
 
     try:
         from tzdata_pkg.download.tushare.mo_minute_downloader import MOMinuteDownloader

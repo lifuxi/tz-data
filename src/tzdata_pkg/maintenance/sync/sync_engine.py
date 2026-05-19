@@ -473,7 +473,8 @@ class SyncEngine:
     ) -> int:
         """Fetch minute quotes for a batch."""
         from tzdata_pkg.storage.questdb_store import QuestDBStore
-        
+        from tzdata_pkg.storage.market_store import MarketStore
+
         frequency = self.catalog.get('frequency', '1min')
         total_records = 0
         exchange = self.catalog.get('exchange_code', '')
@@ -490,17 +491,36 @@ class SyncEngine:
                 current,
                 frequency
             )
-            
+
             if data:
-                inserted = QuestDBStore.insert_minute_quotes(
+                # Add trade_date to each quote (source only returns trade_time)
+                date_str = current.strftime('%Y-%m-%d')
+                for q in data:
+                    if 'trade_date' not in q:
+                        q['trade_date'] = date_str
+                    q['exchange'] = exchange
+                    q['contract_code'] = effective_code
+                    q['frequency'] = frequency
+                    q['source'] = q.get('source', 'tushare')
+
+                # Store in SQLite (primary)
+                inserted = 0
+                try:
+                    store = MarketStore(DBRegistry())
+                    inserted = store.save_minute_quotes(data)
+                except Exception as e:
+                    logger.error(f"SQLite minute insert failed: {e}")
+
+                # Also store in QuestDB (secondary)
+                qdb_inserted = QuestDBStore.insert_minute_quotes(
                     exchange=exchange,
                     contract_code=contract_code,
                     product_code=product_code,
                     quotes=data,
                     frequency=frequency
                 )
-                total_records += inserted
-            
+                total_records += max(inserted, qdb_inserted)
+
             current += timedelta(days=1)
         
         # Update metadata status
